@@ -1,0 +1,45 @@
+# CodeBuild buildspec for distributed K3s deployment
+# Builds Docker images, validates configs.
+# Push and deploy steps are commented out and require explicit manual approval.
+
+version: 0.2
+
+env:
+  variables:
+    GO_VERSION: "1.23"
+
+phases:
+  install:
+    runtime-versions:
+      golang: 1.23
+
+  pre_build:
+    commands:
+      - echo "Tidying modules..."
+      - go mod tidy
+      - echo "Formatting check..."
+      - test -z "$(gofmt -l .)" || { echo "Run make fmt"; exit 1; }
+      - echo "Running vet..."
+      - go vet ./...
+      - echo "Running tests..."
+      - go test ./...
+      - go test -race ./...
+
+  build:
+    commands:
+      - echo "Validating config files..."
+      - go run ./cmd/config-check
+      - echo "Building Docker images..."
+      - docker build -f deployments/distributed-k3s/docker/gateway.Dockerfile -t gateway:${CODEBUILD_RESOLVED_SOURCE_VERSION} .
+      - docker build -f deployments/distributed-k3s/docker/game-server.Dockerfile -t game-server:${CODEBUILD_RESOLVED_SOURCE_VERSION} .
+      - docker tag gateway:${CODEBUILD_RESOLVED_SOURCE_VERSION} REALTIME_ECR_URI/gateway:${CODEBUILD_RESOLVED_SOURCE_VERSION}
+      - docker tag game-server:${CODEBUILD_RESOLVED_SOURCE_VERSION} REALTIME_ECR_URI/game-server:${CODEBUILD_RESOLVED_SOURCE_VERSION}
+
+  post_build:
+    commands:
+      - echo "Push step requires explicit approval"
+      # Do NOT automatically push images.
+      # docker push REALTIME_ECR_URI/gateway:${CODEBUILD_RESOLVED_SOURCE_VERSION}
+      # docker push REALTIME_ECR_URI/game-server:${CODEBUILD_RESOLVED_SOURCE_VERSION}
+      # kubectl set image deployment/gateway gateway=REALTIME_ECR_URI/gateway:${CODEBUILD_RESOLVED_SOURCE_VERSION}
+      # kubectl set image deployment/game-node game-server=REALTIME_ECR_URI/game-server:${CODEBUILD_RESOLVED_SOURCE_VERSION}

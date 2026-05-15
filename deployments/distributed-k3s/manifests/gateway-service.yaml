@@ -1,0 +1,23 @@
+# Gateway HTTP Service
+#
+# Exposes Gateway control plane (HTTP/TCP :8080) to clients.
+# This is separate from the game-node UDP service.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: realtime
+  labels:
+    app: realtime-gateway
+spec:
+  selector:
+    app: realtime-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+  # NOTE: For external access, add an Ingress or change type to LoadBalancer
+  # depending on your provider. No provider-specific assumptions are made here.

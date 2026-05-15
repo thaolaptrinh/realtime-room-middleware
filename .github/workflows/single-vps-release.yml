@@ -1,0 +1,46 @@
+name: Single VPS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: "Release identifier (e.g. 2026-05-15-001)"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Tidy
+        run: go mod tidy
+
+      - name: Test
+        run: |
+          go test ./...
+          go test -race ./...
+
+      - name: Config check
+        run: go run ./cmd/config-check
+
+      - name: Build binaries
+        run: |
+          mkdir -p release/${{ github.event.inputs.release_id }}
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
+            -o release/${{ github.event.inputs.release_id }}/gateway ./cmd/gateway
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
+            -o release/${{ github.event.inputs.release_id }}/game-server ./cmd/game-server
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.event.inputs.release_id }}
+          path: release/
+
+      # Deploy step requires explicit approval and manual execution.
+      # Do NOT add automatic SCP or systemctl restart here.

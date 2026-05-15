@@ -1,0 +1,31 @@
+# Shared configuration for distributed mode
+#
+# Values are examples. Override per environment.
+# Do not put secrets here — use secrets.example.yaml instead.
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: realtime-config
+  namespace: realtime
+data:
+  DEPLOYMENT_MODE: "distributed-k3s"
+  GATEWAY_HTTP_ADDR: ":8080"
+  GAME_KCP_ADDR: ":9000"
+  GAME_TICK_RATE_HZ: "20"
+  GAME_BROADCAST_RATE_HZ: "10"
+  GAME_MAX_PLAYERS_PER_ROOM: "200"
+  PROTOCOL_VERSION: "1"
+  RESOLVER_TYPE: "redis"
+  REGISTRY_TYPE: "redis"
+  REDIS_ADDR: "redis:6379"
+  SPATIAL_CELL_SIZE_M: "10"
+  INTEREST_VISUAL_RADIUS_M: "30"
+  INTEREST_OBJECT_RADIUS_M: "30"
+  INTEREST_VOICE_RADIUS_M: "30"
+  VOICE_ALLOCATOR: "proximity"
+  VOICE_MAX_PARTICIPANTS_PER_GROUP: "8"
+  OBJECT_LOCK_LEASE_TTL_MS: "10000"
+  OBJECT_LOCK_REFRESH_INTERVAL_MS: "3000"
+  OBJECT_LOCK_MAX_LOCKS_PER_USER: "3"
+  METRICS_TYPE: "prometheus"

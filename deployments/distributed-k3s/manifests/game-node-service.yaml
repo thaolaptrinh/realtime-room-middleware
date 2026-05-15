@@ -1,0 +1,29 @@
+# Game Node UDP Service
+#
+# Exposes game server KCP/UDP :9000 to clients.
+# IMPORTANT: UDP is required — KCP runs over UDP, not TCP.
+# Not all cloud providers support UDP LoadBalancers.
+# Verify your infrastructure supports UDP before deploying.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-node
+  namespace: realtime
+  labels:
+    app: realtime-game-node
+spec:
+  selector:
+    app: realtime-game-node
+  ports:
+    - name: kcp-udp
+      port: 9000
+      targetPort: 9000
+      protocol: UDP
+  type: ClusterIP
+  # NOTE: UDP LoadBalancer support varies by provider.
+  # Options:
+  #   - NodePort + external DNS
+  #   - Provider-specific UDP LoadBalancer
+  #   - Headless service + client-side discovery
+  # Choose based on your infrastructure. No provider assumption made here.

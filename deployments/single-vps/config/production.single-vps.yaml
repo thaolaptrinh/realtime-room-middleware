@@ -1,0 +1,46 @@
+deployment:
+  mode: single-vps
+
+gateway:
+  http_addr: ":8080"
+
+game:
+  kcp_addr: ":9000"
+  tick_rate_hz: 20
+  broadcast_rate_hz: 10
+  max_players_per_room: 200
+
+protocol:
+  version: 1
+  serialization: msgpack
+  transport: kcp
+
+resolver:
+  type: single-node
+  single_node_addr: "127.0.0.1:9000"
+
+registry:
+  type: memory
+
+spatial:
+  cell_size_m: 10
+
+interest:
+  visual_radius_m: 30
+  object_radius_m: 30
+  voice_radius_m: 30
+  full_avatar_radius_m: 30
+  low_lod_radius_m: 30
+
+voice:
+  allocator: proximity
+  max_participants_per_group: 8
+  recompute_interval_ms: 250
+
+object_lock:
+  lease_ttl_ms: 10000
+  refresh_interval_ms: 3000
+  max_locks_per_user: 3
+
+metrics:
+  type: prometheus

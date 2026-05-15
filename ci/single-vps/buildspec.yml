@@ -1,0 +1,49 @@
+# CodeBuild buildspec for single VPS deployment
+# Builds Go binaries, runs tests, validates configs, packages release.
+# Deploy steps are commented out and require explicit manual approval.
+
+version: 0.2
+
+env:
+  variables:
+    GO_VERSION: "1.23"
+
+phases:
+  install:
+    runtime-versions:
+      golang: 1.23
+
+  pre_build:
+    commands:
+      - echo "Tidying modules..."
+      - go mod tidy
+      - echo "Formatting check..."
+      - test -z "$(gofmt -l .)" || { echo "Run make fmt"; exit 1; }
+      - echo "Running vet..."
+      - go vet ./...
+      - echo "Running tests..."
+      - go test ./...
+      - go test -race ./...
+
+  build:
+    commands:
+      - echo "Validating config files..."
+      - go run ./cmd/config-check
+      - echo "Building binaries..."
+      - RELEASE_ID=$(date +%Y-%m-%d-%H%M%S)
+      - mkdir -p release/${RELEASE_ID}
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o release/${RELEASE_ID}/gateway ./cmd/gateway
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o release/${RELEASE_ID}/game-server ./cmd/game-server
+
+  post_build:
+    commands:
+      - echo "Release packaged at release/${RELEASE_ID}"
+      - echo "Deploy step requires explicit approval and manual SCP"
+      # Do NOT automatically SCP or restart services.
+      # scp -r release/${RELEASE_ID} vps:/opt/realtime-server/releases/${RELEASE_ID}
+      # ssh vps "ln -sfn /opt/realtime-server/releases/${RELEASE_ID} /opt/realtime-server/current"
+      # ssh vps "systemctl restart gateway game-server"
+
+artifacts:
+  files:
+    - release/**/*

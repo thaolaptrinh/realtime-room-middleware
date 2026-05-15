@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf*)",
+      "Bash(terraform apply*)",
+      "Bash(kubectl apply*)",
+      "Bash(kubectl delete*)",
+      "Bash(systemctl restart*)",
+      "Bash(systemctl stop*)",
+      "Bash(scp *production*)",
+      "Bash(ssh *production*)",
+      "Bash(docker push*)",
+      "Edit(.env*)",
+      "Edit(*secret*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gofmt -w $(git diff --name-only -- '*.go') 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Before final response: include changed files, tests run, tests not run, risks, rollback notes.'"
+          }
+        ]
+      }
+    ]
+  }
+}

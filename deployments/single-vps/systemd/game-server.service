@@ -1,0 +1,28 @@
+[Unit]
+Description=Realtime Room Middleware - Game Server
+After=network.target gateway.service
+
+[Service]
+Type=simple
+User=realtime
+Group=realtime
+WorkingDirectory=/opt/realtime-server/current
+ExecStart=/opt/realtime-server/current/game-server
+Environment=CONFIG_PATH=/opt/realtime-server/config/production.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/realtime-server/logs
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=game-server
+
+[Install]
+WantedBy=multi-user.target

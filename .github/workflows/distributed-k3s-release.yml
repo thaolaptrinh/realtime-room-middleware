@@ -1,0 +1,43 @@
+name: Distributed K3s Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag"
+        required: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Tidy
+        run: go mod tidy
+
+      - name: Test
+        run: |
+          go test ./...
+          go test -race ./...
+
+      - name: Config check
+        run: go run ./cmd/config-check
+
+      - name: Build gateway image
+        run: |
+          docker build -f deployments/distributed-k3s/docker/gateway.Dockerfile \
+            -t gateway:${{ github.event.inputs.image_tag }} .
+
+      - name: Build game-server image
+        run: |
+          docker build -f deployments/distributed-k3s/docker/game-server.Dockerfile \
+            -t game-server:${{ github.event.inputs.image_tag }} .
+
+      # Push and deploy steps require explicit approval.
+      # Do NOT add automatic docker push or kubectl apply here.
+      # Configure ECR login and push when production registry is set up.

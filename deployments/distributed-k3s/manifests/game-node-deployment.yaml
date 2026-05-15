@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: game-node
+  labels:
+    app: realtime-game-node
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: realtime-game-node
+  template:
+    metadata:
+      labels:
+        app: realtime-game-node
+    spec:
+      containers:
+        - name: game-server
+          image: REALTIME_ECR_URI/game-server:latest
+          ports:
+            - containerPort: 9000
+              protocol: UDP
+          env:
+            - name: CONFIG_PATH
+              value: /app/config/distributed.yaml
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-node
+spec:
+  selector:
+    app: realtime-game-node
+  ports:
+    - port: 9000
+      targetPort: 9000
+      protocol: UDP
+  type: LoadBalancer

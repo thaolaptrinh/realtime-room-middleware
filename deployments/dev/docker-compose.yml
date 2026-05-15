@@ -1,0 +1,48 @@
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deployments/dev/gateway.Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config/dev.yaml:/app/config.yaml:ro
+    depends_on:
+      - game-server
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+
+  game-server:
+    build:
+      context: ../..
+      dockerfile: deployments/dev/game-server.Dockerfile
+    ports:
+      - "9000:9000/udp"
+    volumes:
+      - ./config/dev.yaml:/app/config.yaml:ro
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+
+  # Optional: uncomment to test distributed path locally
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   profiles:
+  #     - redis
+
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #   profiles:
+  #     - monitoring
+
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   ports:
+  #     - "3000:3000"
+  #   profiles:
+  #     - monitoring

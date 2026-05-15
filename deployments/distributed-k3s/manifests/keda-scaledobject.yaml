@@ -1,0 +1,16 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: game-node-scaler
+spec:
+  scaleTargetRef:
+    name: game-node
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  cooldownPeriod: 60
+  triggers:
+    - type: redis
+      metadata:
+        address: redis:6379
+        listName: queue:pending_rooms
+        listLength: "1"
