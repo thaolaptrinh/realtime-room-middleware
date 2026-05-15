@@ -183,3 +183,32 @@ The following are reserved and documented but not yet coded:
 - LeaveRoom (client → server)
 
 These will be implemented in later milestones.
+
+## Protocol v2 Future Candidate: Protobuf
+
+Protobuf is not rejected forever. It is the preferred future candidate if the protocol needs stronger schema governance. However, it is deferred intentionally.
+
+**MessagePack remains the production Protocol v1.** No Protobuf implementation, `.proto` files, or protobuf dependencies exist or will be added at this stage.
+
+### Why Protobuf is deferred
+
+Protocol v1 uses MessagePack because the protocol is still evolving and MessagePack allows faster iteration. Protobuf adds value when schemas stabilize and multiple client versions must be maintained long-term.
+
+### When Protocol v2 (Protobuf) may be reconsidered
+
+Protocol v2 may be considered only when all of the following are true:
+
+1. Protocol v1 MessagePack schema has stabilized.
+2. Unity client contract has been validated in production.
+3. Production load tests provide packet size, bandwidth, and CPU data.
+4. Multiple Unity client versions must be supported long-term.
+5. The team accepts Go + Unity/C# code generation workflow.
+6. A backward compatibility and migration plan exists.
+7. There is measurable benefit over MessagePack v1.
+
+### Migration rules
+
+- Any Protobuf migration must be treated as a **Protocol v2 migration**, not a silent codec swap.
+- Protocol v2 must support explicit compatibility and migration rules.
+- Protocol v1 and v2 may need to coexist during migration.
+- The KCP transport layer is codec-agnostic; only the serialization layer changes.

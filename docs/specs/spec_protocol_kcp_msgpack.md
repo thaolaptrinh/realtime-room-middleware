@@ -49,9 +49,28 @@ Defines the MessagePack envelope structure, version field, foundation message ty
 - Decode empty data returns error
 - Error codes are unique (no duplicates)
 
+## Protocol v2 Future Candidate: Protobuf
+
+Protobuf is not rejected forever. It is the preferred candidate if the protocol needs stronger schema governance. It is deferred intentionally.
+
+MessagePack remains the production Protocol v1. No `.proto` files, protobuf dependencies, or generated Go/C# code exist or will be added at this stage.
+
+Protocol v2 (Protobuf) may be considered only when:
+
+1. Protocol v1 MessagePack schema has stabilized.
+2. Unity client contract has been validated in production.
+3. Production load tests provide packet size, bandwidth, and CPU data.
+4. Multiple Unity client versions must be supported long-term.
+5. The team accepts Go + Unity/C# code generation workflow.
+6. A backward compatibility and migration plan exists.
+7. There is measurable benefit over MessagePack v1.
+
+Any Protobuf migration must be treated as a Protocol v2 migration, not a silent codec swap. Protocol v2 must support explicit compatibility and migration rules.
+
 ## Intentionally Not Implemented
 
 - KCP transport (Stage 1 Task 2)
 - Reconnect, PlayerInput, FullSnapshot, PlayerDelta, ObjectDelta, VoiceGroupDelta, LockAccepted, LockRejected messages (later milestones)
 - Gateway HTTP /join endpoint (Stage 1 Task 3)
 - Room manager and game runtime (Milestone 2+)
+- Protobuf codec (deferred to Protocol v2, not currently needed)
