@@ -41,8 +41,6 @@ Important assumptions:
 
 The recommended architecture is a **spatial-interest-driven realtime server**.
 
-It is not a K-Means-driven architecture. K-Means can exist as one implementation of voice/proximity grouping, but it should not be the foundation of realtime visibility or synchronization.
-
 Core design:
 
 ```txt
@@ -51,12 +49,35 @@ KCP over UDP            = realtime data plane (Unity native)
 WSS/WebSocket           = realtime data plane (Unity WebGL)
 MessagePack             = realtime payload serialization (both transports)
 RealtimeSession         = transport abstraction layer
-Spatial Hashing         = interest management core
-Delta Broadcast         = bandwidth optimization core
+Spatial Hashing         = per-tick proximity index (always required)
+ClusterAllocator        = periodic position-based sync grouping (Phase 1: K-Means)
+Delta Broadcast         = bandwidth optimization (cluster-scoped in Phase 1)
 Room Loop               = single authority for room state mutation
-Command Queue + Lease   = object locking consistency model
-Voice Allocator         = pluggable policy layer
+Command Queue + Lease   = object locking consistency model (Deferred / Future Scope)
+Voice Allocator         = pluggable voice grouping policy (Deferred / Future Scope)
 ```
+
+### K-Means and Spatial Hash Roles
+
+Spatial hashing and K-Means serve different, non-overlapping roles:
+
+```txt
+GridSpatialHash:
+- runs every tick
+- O(1) insert/update/remove, O(neighbors) query
+- ground truth for exact proximity
+- input data source for K-Means
+
+ClusterAllocator (K-Means in Phase 1):
+- runs periodically (interval, movement, membership triggers)
+- groups players by position into stable clusters
+- cluster membership drives the primary Phase 1 interest path
+- must not replace spatial hash
+- must not be used for physics, room authority, or transport routing
+- stays behind the ClusterAllocator interface (future policies can be substituted)
+```
+
+K-Means is not room authority. It is a grouping policy behind an interface. The room loop owns scheduling K-Means recomputes and committing cluster assignments. Transport goroutines do not call K-Means.
 
 Deployment strategy:
 
@@ -384,21 +405,29 @@ Mode-specific logic belongs only in adapters and deployment folders.
 
 ### 5.1 Core Components
 
+Phase 1 active components:
+
 ```txt
 RoomManager
 Room
 SessionManager
 RealtimeSession (interface — transport abstraction)
 PlayerStateStore
-ObjectStateStore
-ObjectLockManager
-SpatialIndex
-InterestManager
-VoiceGroupAllocator
+SpatialIndex (GridSpatialHash)
+ClusterAllocator (interface — KMeansClusterAllocator in Phase 1)
+InterestManager (radius fallback)
 DeltaBroadcaster
 ProtocolCodec
 KCPTransport
 WSSTransport
+```
+
+Deferred / Future Scope:
+
+```txt
+ObjectStateStore          — object sync
+ObjectLockManager         — object locking
+VoiceGroupAllocator       — voice grouping
 ```
 
 ### 5.2 Single Authority Mutation Rule
@@ -521,7 +550,9 @@ type InterestSet struct {
 }
 ```
 
-### 6.5 VoiceGroupAllocator
+### 6.5 VoiceGroupAllocator — Deferred / Future Scope
+
+**Not a Phase 1 implementation target. Interface defined for future use.**
 
 ```go
 type VoiceGroupAllocator interface {
@@ -529,22 +560,18 @@ type VoiceGroupAllocator interface {
 }
 ```
 
-Implementations:
+Future implementations:
 
 ```txt
-ProximityVoiceAllocator
-KMeansVoiceAllocator optional
+ProximityVoiceAllocator   — deferred
+KMeansVoiceAllocator      — deferred (may reuse position cluster output; requires separate design)
 ```
 
-Recommended initial default:
+Voice grouping is separate from Phase 1 position cluster sync. The `ClusterAllocator` used for player delta broadcast is a different interface from `VoiceGroupAllocator`. Do not conflate them.
 
-```txt
-ProximityVoiceAllocator
-```
+### 6.6 ObjectLockManager — Deferred / Future Scope
 
-K-Means should stay behind this interface.
-
-### 6.6 ObjectLockManager
+**Not a Phase 1 implementation target. Interface defined for future use.**
 
 ```go
 type ObjectLockManager interface {
@@ -556,7 +583,7 @@ type ObjectLockManager interface {
 }
 ```
 
-Consistency model:
+Consistency model (future):
 
 ```txt
 server-authoritative command queue + lease TTL
@@ -662,22 +689,32 @@ type ObjectState struct {
 
 ### 8.2 Room Tick Loop
 
+Phase 1 room tick loop:
+
 ```txt
-Room Tick Loop
-├─ drain input queues
-├─ drain object command queue
-├─ validate movement and commands
-├─ update player state
-├─ process object lock/interact commands
-├─ release expired object locks
+Room Tick Loop (Phase 1)
+├─ drain player input queue
+├─ update player transform state (position, rotation, animation state, dirty mask)
 ├─ update spatial hash
-├─ compute interest set per client
-├─ allocate voice/proximity groups
-├─ compute player delta
-├─ compute object delta
-├─ compute voice delta
-├─ encode MessagePack
-└─ enqueue KCP packets
+├─ [on trigger] run ClusterAllocator.Compute → update ClusterOutput
+│   triggers: interval | movement threshold | membership change
+├─ [every 2nd tick] broadcast:
+│   ├─ for each session: resolve visible players (cluster path or radius fallback)
+│   ├─ DeltaBuilder.BuildPlayerDelta → PlayerDelta
+│   ├─ encode MessagePack
+│   └─ send via RealtimeSession (KCP or WSS per session)
+└─ clear dirty player set
+```
+
+Deferred (not in Phase 1 room loop):
+
+```txt
+drain object command queue      — Deferred / Future Scope
+process object lock commands    — Deferred / Future Scope
+release expired object locks    — Deferred / Future Scope
+allocate voice/proximity groups — Deferred / Future Scope
+compute object delta            — Deferred / Future Scope
+compute voice delta             — Deferred / Future Scope
 ```
 
 ### 8.3 Tick and Broadcast Rates
@@ -824,7 +861,9 @@ Server should not send unnecessary full state.
 
 ---
 
-## 11. Object Synchronization and Locking
+## 11. Object Synchronization and Locking — Deferred / Future Scope
+
+**Not a Phase 1 implementation target. Architecture is documented here for future reference.**
 
 ### 11.1 Problem
 
@@ -1024,27 +1063,31 @@ No full-room full-state broadcast during normal operation.
 
 ---
 
-## 14. Voice / Proximity Grouping
+## 14. Voice / Proximity Grouping — Deferred / Future Scope
 
-### 14.1 Recommended Initial Policy
+**Not a Phase 1 implementation target. Do not implement until a future phase is explicitly started.**
 
-Use proximity-based grouping first.
+Voice grouping is separate from Phase 1 position cluster sync. The `ClusterAllocator` (Phase 1, position-based delta sync) is a different interface from `VoiceGroupAllocator` (future, voice grouping). Do not conflate them.
+
+### 14.1 Future Policy
+
+Future recommended starting point:
 
 ```txt
 Spatial hash → voice candidates → max N participants per group
 ```
 
-### 14.2 K-Means Policy
+### 14.2 K-Means Voice Policy (future, optional)
 
-K-Means can be implemented behind the same interface:
+K-Means may be used for voice grouping behind the `VoiceGroupAllocator` interface in a future phase. This is distinct from the Phase 1 `ClusterAllocator`.
 
 ```txt
-VoiceGroupAllocator = KMeansVoiceAllocator
+VoiceGroupAllocator = KMeansVoiceAllocator   — future option
 ```
 
-Do not wire K-Means directly into the room loop as a foundation.
+Phase 1 `ClusterAllocator` cluster IDs will NOT be directly reused as voice group IDs without a separate design.
 
-### 14.3 Config
+### 14.3 Config (future)
 
 ```yaml
 voice:
@@ -1056,15 +1099,7 @@ voice:
 
 ### 14.4 Why Pluggable
 
-K-Means may cause:
-
-- Flicker.
-- Debug complexity.
-- Unstable group switching.
-- Extra CPU cost.
-- No natural max-size guarantee.
-
-Keeping it pluggable lets the team benchmark and switch policy without rewriting core logic.
+Keeping voice grouping behind an interface lets the team benchmark and switch policy without rewriting core logic. K-Means may cause flicker, unstable group switching, and has no natural max-size guarantee — Phase 1 position clustering benchmarks will inform whether K-Means is suitable for voice grouping.
 
 ---
 
@@ -1942,7 +1977,8 @@ Custom realtime middleware server for Unity, replacing part of Normcore synchron
 - Network goroutines push inputs/commands into queues
 - Transport adapters must not mutate room state
 - Object locking uses server command queue + lease TTL
-- Voice grouping is pluggable; K-Means is optional, not foundational
+- Voice grouping is pluggable; K-Means as a voice policy is optional and deferred
+- K-Means as `ClusterAllocator` is the Phase 1 position-based sync grouping implementation, behind the interface
 
 ## Hard Rules
 - Do not full-broadcast room state in normal ticks.
@@ -2382,9 +2418,78 @@ Every completion should include:
 
 ---
 
-## 30. Implementation Roadmap
+## 30. Phase 1 Gameplay Focus: Position Cluster Sync
 
-## 30.1 Milestone 0 — Foundation
+**Current implementation target.** Phase 1 delivers player position and transform synchronization using spatial hashing and K-Means cluster-based delta broadcast. All gameplay features listed here are active Phase 1 implementation scope.
+
+### 30.0.1 Phase 1 Gameplay Features
+
+```txt
+Player transform state:
+- position (Vec2 or Vec3)
+- rotation (float32)
+- animation state (uint16)
+- dirty mask for delta encoding
+
+Spatial hash:
+- fast local player lookup by position
+- cell-based bucketing
+- configurable cell size
+
+K-Means cluster allocator:
+- groups players by position into clusters
+- cluster membership drives interest sets and delta targeting
+- replaces proximity-radius-only approach for phase 1
+- pluggable behind ClusterAllocator interface (future policies can be added)
+
+Cluster-based player delta broadcast:
+- interest set built from cluster membership
+- PlayerDelta sent only to players in the same cluster
+- enter/update/leave semantics preserved
+
+Mixed transport support:
+- KCP/UDP (Unity native) and WSS/WebSocket (Unity WebGL) clients in the same room
+- same MessagePack payload on both transports
+- room loop and delta broadcast are transport-agnostic
+
+Load testing:
+- 50 CCU player position update scenario
+- 100 CCU player position update scenario
+- 200 CCU player position update scenario
+- validate delta packet size and CPU under position-sync workload
+```
+
+### 30.0.2 Deferred Gameplay Features
+
+**Not in Phase 1. Not removed from the product architecture. Will be implemented in a later phase.**
+
+```txt
+Voice grouping:
+- VoiceGroupAllocator interface (defined)
+- ProximityVoiceAllocator (deferred)
+- KMeansVoiceAllocator (deferred)
+- VoiceGroupDelta broadcast (deferred)
+
+Object locking:
+- ObjectLockManager interface (defined)
+- command queue + lease TTL model (deferred)
+- LockAccepted / LockRejected / ReleaseLock messages (deferred)
+- lock expiration and disconnect release (deferred)
+
+Object sync:
+- ObjectState struct (defined)
+- ObjectDelta broadcast (deferred)
+- full object snapshot on join (deferred)
+- object command queue (deferred)
+```
+
+Interfaces for deferred features are documented in this blueprint. Skeleton files may exist in the codebase. Do not implement runtime behavior for deferred features until a later phase is explicitly started.
+
+---
+
+## 31. Implementation Roadmap
+
+## 31.1 Milestone 0 — Foundation
 
 Deliver:
 
@@ -2406,7 +2511,7 @@ Acceptance:
 - dev compose boots
 ```
 
-## 30.2 Milestone 1 — Protocol and KCP Session
+## 31.2 Milestone 1 — Protocol and KCP Session
 
 Deliver:
 
@@ -2427,7 +2532,7 @@ Acceptance:
 - invalid version rejected
 ```
 
-## 30.3 Milestone 2 — Room Manager and Multi-Room
+## 31.3 Milestone 2 — Room Manager and Multi-Room
 
 Deliver:
 
@@ -2448,30 +2553,36 @@ Acceptance:
 - room cleanup tested
 ```
 
-## 30.4 Milestone 3 — Player Sync
+## 31.4 Milestone 3 — Player Position Sync (Phase 1 Gameplay)
 
 Deliver:
 
 ```txt
-- player state
-- movement input
-- spatial hash
-- interest set
+- player transform state (position, rotation, animation state, dirty mask)
+- movement input handling
+- spatial hash (cell-based, configurable cell size)
+- K-Means cluster allocator (ClusterAllocator interface)
+- cluster membership → interest set
 - FullSnapshot
-- PlayerDelta
+- PlayerDelta (cluster-based, enter/update/leave)
+- mixed KCP/WSS transport support in the same room
 ```
 
 Acceptance:
 
 ```txt
-- 50 simulated clients move
+- 50 simulated clients move and receive cluster-scoped deltas
 - no full broadcast in normal tick
-- spatial tests pass
+- spatial hash tests pass
+- cluster allocator tests pass
+- mixed transport test: KCP senders + WSS receivers in the same room
 ```
 
-## 30.5 Milestone 4 — Object Sync and Locking
+## 31.5 Milestone 4 — Object Sync and Locking (Deferred / Future Scope)
 
-Deliver:
+**Not in Phase 1. Do not implement until a later phase is explicitly started.**
+
+Planned deliver (future):
 
 ```txt
 - object state
@@ -2482,7 +2593,7 @@ Deliver:
 - disconnect release
 ```
 
-Acceptance:
+Future acceptance:
 
 ```txt
 - lock contention tests pass
@@ -2490,9 +2601,11 @@ Acceptance:
 - object deltas received only by interested clients
 ```
 
-## 30.6 Milestone 5 — Voice/Proximity Grouping
+## 31.6 Milestone 5 — Voice/Proximity Grouping (Deferred / Future Scope)
 
-Deliver:
+**Not in Phase 1. Do not implement until a later phase is explicitly started.**
+
+Planned deliver (future):
 
 ```txt
 - VoiceGroupAllocator interface
@@ -2501,7 +2614,7 @@ Deliver:
 - VoiceGroupDelta
 ```
 
-Acceptance:
+Future acceptance:
 
 ```txt
 - max group size enforced
@@ -2509,7 +2622,7 @@ Acceptance:
 - config switch works
 ```
 
-## 30.7 Milestone 6 — Single VPS Production
+## 31.7 Milestone 6 — Single VPS Production
 
 Deliver:
 
@@ -2531,7 +2644,7 @@ Acceptance:
 - KCP smoke test passes
 ```
 
-## 30.8 Milestone 7 — Load Test and Optimization
+## 31.8 Milestone 7 — Load Test and Optimization
 
 Deliver:
 
@@ -2551,7 +2664,7 @@ Acceptance:
 - 200 CCU target validated or remediation planned
 ```
 
-## 30.9 Milestone 8 — Distributed Scale Skeleton
+## 31.9 Milestone 8 — Distributed Scale Skeleton
 
 Deliver:
 
@@ -2574,7 +2687,7 @@ Acceptance:
 - scale path documented
 ```
 
-## 30.10 Milestone 9 — Distributed Scale Production
+## 31.10 Milestone 9 — Distributed Scale Production
 
 Deliver when infra is available:
 
@@ -2598,7 +2711,7 @@ Acceptance:
 
 ---
 
-## 31. What Not to Automate
+## 35. What Not to Automate
 
 Do not let Claude or scripts automatically:
 
@@ -2617,20 +2730,28 @@ Do not let Claude or scripts automatically:
 
 ## 32. Production Acceptance Checklist
 
-### Shared Core
+### Shared Core — Phase 1
 
 ```txt
 [ ] Protocol versioning implemented
 [ ] KCP smoke test implemented
+[ ] WSS smoke test implemented
 [ ] FullSnapshot implemented
-[ ] PlayerDelta implemented
-[ ] ObjectDelta implemented
-[ ] VoiceGroupDelta implemented
+[ ] PlayerDelta implemented (cluster-based)
 [ ] Spatial hashing implemented
-[ ] Interest manager implemented
-[ ] Object lock manager implemented
+[ ] K-Means cluster allocator implemented
+[ ] Interest manager implemented (cluster membership)
 [ ] Room loop single-writer rule followed
 [ ] Race tests pass
+[ ] Mixed transport test passed (KCP + WSS in same room)
+```
+
+### Shared Core — Deferred / Future Scope
+
+```txt
+[ ] ObjectDelta implemented          -- Deferred: object sync
+[ ] VoiceGroupDelta implemented      -- Deferred: voice grouping
+[ ] Object lock manager implemented  -- Deferred: object locking
 ```
 
 ### Single VPS
@@ -2684,52 +2805,115 @@ These should remain true throughout implementation:
 14. Delta broadcast prevents full-room full-state spam.
 15. Object locking uses command queue + lease TTL.
 16. Voice grouping is pluggable.
-17. K-Means is optional, not foundational.
+17. K-Means (`KMeansClusterAllocator`) is the Phase 1 `ClusterAllocator` implementation for position-based sync grouping. It stays behind the interface. It is not room authority, not the spatial hash, and not used for physics or transport routing. K-Means as a voice grouping policy is separate, optional, and deferred.
 18. Bandwidth and 200 CCU capacity must be measured, not assumed.
 19. Native and WebGL clients may coexist in the same room instance.
 ```
 
 ---
 
-## 34. Recommended First Implementation Order
+## 34. Phase 1 Implementation Roadmap
 
-Start here:
+### 34.1 Immediate — Phase 1 Gameplay (Position Cluster Sync)
+
+Complete these tasks before any deferred gameplay features.
 
 ```txt
-1. Repo skeleton
-2. Config profiles
-3. Protocol envelope
-4. KCP smoke server/client (Unity native transport)
-4b. WSS transport adapter (Unity WebGL — Phase 1 requirement if WebGL release is required)
-5. Gateway /join
-6. RoomManager multi-room
-7. Player state + spatial hash
-8. FullSnapshot + PlayerDelta
-9. Object state + lock manager
-10. ObjectDelta
-11. Loadtest 50 CCU
-12. Loadtest 100 CCU
-13. Loadtest 200 CCU
-14. Single VPS deploy
-15. Redis resolver skeleton
-16. K3s/KEDA manifests
+1.  Player transform state
+    - PlayerState: position (Vec2), rotation (float32), animation state (uint16), dirty mask
+    - CmdPlayerInput and CmdUpdatePlayerTransform update PlayerState in room loop
+    - Version increment on state change
+
+2.  Spatial hash update on tick
+    - Room loop updates GridSpatialHash on every player transform change
+    - NearbyPlayers and NearbyPlayersAt remain available for fallback queries
+
+3.  Interest query (radius fallback path)
+    - InterestManager.QueryVisiblePlayers used when cluster_enabled=false
+    - Confirmed working from existing skeleton
+
+4.  Delta broadcast skeleton
+    - DeltaBuilder.BuildPlayerDelta wired into broadcast tick
+    - PlayerDelta (Enters, Updates, Leaves) computed per session
+    - ClientSnapshotCache maintained per session
+
+5.  K-Means cluster allocator skeleton
+    - ClusterAllocator interface (internal/game/cluster/allocator.go)
+    - KMeansClusterAllocator (internal/game/cluster/kmeans.go)
+    - ClusterInput, ClusterOutput, ClusterConfig types
+    - Unit tests for all cluster behaviors
+
+6.  Cluster membership integration
+    - ClusterConfig added to RoomConfig
+    - Room loop tracks maxMovementSinceLastCluster and player count delta
+    - Cluster recompute on: interval, movement threshold, membership change
+    - ClusterOutput stored on Room, updated by room loop only
+
+7.  Cluster-based broadcast interest
+    - buildDeltaBatches uses ClusterOutput.Clusters[viewerCluster] when cluster_enabled=true
+    - Fallback to InterestManager radius query when cluster_enabled=false
+    - PlayerDelta encoding (MessagePack) + transport send (KCP and WSS) wired in
+
+8.  Mixed KCP/WSS position sync smoke test
+    - Integration test: KCP client + WSS client in same room
+    - Both receive PlayerDelta from each other
+    - Same cluster assignment regardless of transport
+
+9.  Load test — position sync
+    - 50 CCU random movement scenario
+    - 100 CCU random movement scenario
+    - 200 CCU random movement scenario
+    - Capture: cluster_compute_duration_ms, bytes_per_client, room_tick_duration_ms
+
+10. Web demo client (optional Phase 1 milestone)
+    - WSS + MessagePack client in browser (Unity WebGL or plain JS)
+    - Visualizes player positions from PlayerDelta stream
+    - Validates mixed transport room behavior end-to-end
 ```
 
-Do not start with:
+### 34.2 Deferred — Future Phases
+
+Do not implement until the relevant phase is explicitly started.
 
 ```txt
-- KEDA
-- K-Means
-- complex autoscaling
-- Kubernetes production
-- full admin panel
+Voice grouping:
+- VoiceGroupAllocator interface
+- ProximityVoiceAllocator
+- KMeansVoiceAllocator (if needed after proximity)
+- VoiceGroupDelta broadcast
+- Voice candidate radius queries in InterestManager
+
+Object sync:
+- ObjectState runtime (beyond skeleton)
+- Object interest management (spatial hash for objects)
+- Object snapshot cache
+- ObjectDelta broadcast
+
+Object locking:
+- ObjectLockManager runtime (beyond interface/skeleton)
+- Command queue + lease TTL model
+- LockAccepted / LockRejected messages
+- Lock expiration sweep in room tick
+- Disconnect lock release
+
+Reconnect flow:
+- Reconnect / ReconnectAccepted / ReconnectRejected messages
+- Session recovery on reconnect
+
+Distributed K3s:
+- RedisNodeResolver
+- RedisRoomRegistry
+- Heartbeat and pending-room queue
+- K3s/KEDA manifests
+- Distributed CI/CD
 ```
 
 The production path is:
 
 ```txt
-Build core correctly
+Build Phase 1 correctly (position cluster sync)
 Ship single VPS safely
-Measure limits
+Measure load test limits
+Start deferred gameplay features when explicitly requested
 Enable distributed mode when infra exists
 ```

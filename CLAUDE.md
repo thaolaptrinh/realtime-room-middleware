@@ -18,19 +18,24 @@ Custom realtime middleware server for Unity, replacing part of Normcore synchron
 
 ## Core Architecture
 
-- Spatial hashing for interest management
-- Delta broadcast for bandwidth reduction
-- Room loop is the only writer of room state
-- Network goroutines push inputs/commands into queues
-- Object locking uses server command queue + lease TTL
-- Voice grouping is pluggable; K-Means is optional, not foundational
+- Spatial hashing for per-tick proximity indexing (always required)
+- K-Means cluster allocator for position-based sync grouping (Phase 1 primary interest source)
+- Delta broadcast for bandwidth reduction (cluster-scoped in Phase 1)
+- Room loop is the only writer of room state, player state, and cluster assignments
+- Network goroutines push inputs/commands into queues — never mutate room state
+- Object locking: server command queue + lease TTL — Deferred / Future Scope
+- Voice grouping: pluggable allocator interface — Deferred / Future Scope
 
 ## Implementation Phase
 
-- **Current target:** Phase 1 — single-vps production.
+- **Current target:** Phase 1 — position cluster sync on single-vps production.
+- **Phase 1 gameplay scope:** player transform sync, spatial hash, K-Means cluster allocator, cluster-based PlayerDelta, mixed KCP/WSS support.
+- **Deferred gameplay:** object locking, object sync, voice grouping — do not implement until explicitly requested.
 - **Distributed K3s:** docs, skeleton, and placeholder files only. Do not implement distributed runtime until Phase 2 is explicitly started.
 
 ## Hard Rules
+
+### Always
 
 - Do not full-broadcast room state in normal ticks.
 - Do not mutate room state from network goroutines.
@@ -42,6 +47,29 @@ Custom realtime middleware server for Unity, replacing part of Normcore synchron
 - Do not edit secrets or .env files.
 - Do not deploy or restart production services unless explicitly approved.
 - Do not claim 200 CCU capacity without measured load test results.
+
+### Phase 1 Gameplay Scope
+
+- Do not implement object locking unless explicitly requested.
+- Do not implement object sync (ObjectState, ObjectDelta, object command queue) unless explicitly requested.
+- Do not implement voice grouping (VoiceGroupAllocator, VoiceGroupDelta) unless explicitly requested.
+- Keep voice/object features documented as future scope — do not delete their documentation.
+- Current Phase 1 gameplay focus is player position transform sync + K-Means cluster-based delta broadcast.
+
+### Cluster Allocator Rules
+
+- Use spatial hash (`GridSpatialHash`) for per-tick proximity lookups.
+- Use `ClusterAllocator` interface for position-based sync grouping.
+- K-Means is the Phase 1 implementation of `ClusterAllocator`. It must stay behind the interface.
+- Do not call `ClusterAllocator.Compute` on every room tick without benchmark approval. Use the interval + movement + membership change triggers defined in `docs/specs/spec_kmeans_cluster_sync.md`.
+- Cluster computation must happen only in the room loop goroutine. Never in transport goroutines.
+- Room loop is the sole owner of player state, spatial index, and cluster assignment mutations.
+
+### Transport Rules
+
+- KCP and WSS clients must receive the same MessagePack gameplay protocol — no separate schemas.
+- Transport type must not affect cluster membership, delta content, or room logic.
+- Mixed transport tests (KCP senders + WSS receivers in the same room) are required before declaring production readiness.
 
 ## Transport Rules
 
@@ -83,23 +111,26 @@ Infra changes:
 ## Project Structure
 
 ```
-cmd/gateway/           Gateway binary
-cmd/game-server/       Game server binary
-internal/config/       Config loader
-internal/protocol/     MessagePack envelope and messages
+cmd/gateway/            Gateway binary
+cmd/game-server/        Game server binary
+internal/config/        Config loader
+internal/protocol/      MessagePack envelope and messages
 internal/transport/kcp/ KCP server and sessions
-internal/gateway/      HTTP handlers
-internal/game/room/    Room struct, room loop, RoomManager
-internal/game/player/  PlayerState, movement input
-internal/game/object/  ObjectState, lock manager (lease TTL)
-internal/game/session/ Session management, KCP↔player mapping
-internal/game/spatial/ Spatial hash
-internal/game/interest/ Interest manager
-internal/game/delta/   Delta broadcaster, snapshot cache
-internal/game/voice/   Voice group allocator
-internal/adapters/     Resolver and registry implementations
+internal/transport/wss/ WSS/WebSocket server and sessions
+internal/gateway/       HTTP handlers
+internal/game/room/     Room struct, room loop, RoomManager
+internal/game/player/   PlayerState, movement input
+internal/game/object/   ObjectState, lock manager (lease TTL) — skeleton only, deferred
+internal/game/session/  Session management, KCP↔player mapping
+internal/game/spatial/  Spatial hash (GridSpatialHash)
+internal/game/cluster/  ClusterAllocator interface, KMeansClusterAllocator — Phase 1
+internal/game/interest/ Interest manager (radius fallback)
+internal/game/delta/    Delta broadcaster, snapshot cache
+internal/game/voice/    Voice group allocator — skeleton only, deferred
+internal/adapters/      Resolver and registry implementations
 internal/observability/ Metrics and logging
-deployments/           Mode-specific deployment configs
-config/                Mode-explicit example configs
-docs/                  Architecture, protocol, runbooks
+deployments/            Mode-specific deployment configs
+config/                 Mode-explicit example configs
+docs/                   Architecture, protocol, runbooks
+docs/specs/             Detailed implementation specs
 ```

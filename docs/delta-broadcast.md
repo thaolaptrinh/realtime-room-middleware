@@ -1,5 +1,28 @@
 # Delta Broadcast
 
+## Phase 1 Focus
+
+Phase 1 delta broadcast covers player position sync only.
+
+| In scope | Status |
+|---|---|
+| PlayerEnterDelta | Implemented (skeleton) |
+| PlayerUpdateDelta | Implemented (skeleton) |
+| PlayerLeaveDelta | Implemented (skeleton) |
+| Cluster-based interest (replaces radius query as primary path) | Spec complete — not yet implemented |
+| Position dirty tracking | Implemented |
+| Per-client snapshot cache | Implemented |
+| MessagePack encoding of PlayerDelta | Not yet implemented |
+| Transport send (KCP/WSS) of PlayerDelta | Not yet implemented |
+
+Deferred from Phase 1:
+
+| Feature | Status |
+|---|---|
+| ObjectDelta | Deferred / Future Scope |
+| ObjectLockDelta | Deferred / Future Scope |
+| VoiceGroupDelta | Deferred / Future Scope |
+
 ## Status: Object delta placeholder types added (Stage 2 Task 6)
 
 Player delta skeleton is complete. Object delta placeholder types are defined but not yet wired
@@ -80,9 +103,12 @@ Broadcast runs at `RoomConfig.BroadcastRateHz` (default 10 Hz), which is a sub-r
 ```
 Room tick (20 Hz):
   drain command queue
+  update player transform state (position, rotation, animation state)
+  update spatial hash
+  [on cluster recompute trigger]: run ClusterAllocator.Compute → update ClusterOutput
   [every 2nd tick] broadcast(tick):
     sessionMu.Lock
-    buildDeltaBatches — interest query + delta computation per session
+    buildDeltaBatches — cluster interest (or radius fallback) + delta computation per session
     clearDirtyPlayers
     sessionMu.Unlock
     [batches discarded — transport send is a future milestone]
@@ -92,22 +118,37 @@ Room tick (20 Hz):
 
 - `DeltaBuilder` has no transport-specific fields or logic.
 - `DeltaBatch` has no KCP/WebSocket metadata.
-- The delta builder outputs domain data only; encoding and sending are deferred.
+- The delta builder outputs domain data only; encoding and sending are deferred to Phase 1 transport send milestone.
 - Transport packages must not import `internal/game`.
-- Native and WebGL clients receive semantically identical deltas.
+- Native (KCP) and WebGL (WSS) clients receive semantically identical `PlayerDelta` payloads.
 
 ## Interest Integration
 
-`buildDeltaBatches` uses `InterestManager.QueryVisiblePlayers` (from `internal/game/interest`) to determine each viewer's visible player set. The spatial hash provides the proximity query. Both calls happen under `sessionMu.Lock` inside the room loop.
+Phase 1 primary path: `buildDeltaBatches` uses cluster membership from `ClusterOutput` to determine each viewer's visible player set when `cluster_enabled = true`.
+
+Fallback path: `InterestManager.QueryVisiblePlayers` (radius query) is used when `cluster_enabled = false`.
+
+Both paths feed `DeltaBuilder.BuildPlayerDelta` with the same interface — a slice of visible player IDs. The delta builder is interest-source-agnostic.
+
+```
+broadcast(tick) [holds sessionMu.Lock]
+  → for each active session:
+      if cluster_enabled:
+        visiblePlayers = ClusterOutput.Clusters[viewerCluster] \ {viewerID}
+      else:
+        visiblePlayers = interestMgr.QueryVisiblePlayers(r.spatial, viewerPos, viewerID)
+      → DeltaBuilder.BuildPlayerDelta(tick, visiblePlayers, snapshot, playerStates)
+```
 
 ## Hard Rules
 
 - No full-room full-state broadcast during normal operation.
 - No transport-specific fields in delta types.
-- No object or voice delta yet (deferred to later milestones).
+- No object delta or voice delta in Phase 1. Both are deferred.
 - No Redis/KEDA dependency.
+- Cluster computation must not happen inside `buildDeltaBatches`. The cluster output is computed by the room loop tick and is read-only during broadcast.
 
-## Object Delta (Placeholder — Milestone 4)
+## Object Delta (Placeholder — Deferred / Future Scope)
 
 Types are defined in `internal/game/delta/types.go`:
 
@@ -119,18 +160,40 @@ type ObjectLockDelta    // lock granted / released / expired (may fire outside n
 type ObjectDelta        // aggregates all of the above for one tick
 ```
 
-Not yet wired to interest management, snapshot cache, or transport send.
+Not wired to interest management, snapshot cache, or transport send. Not a Phase 1 implementation target.
 
-## Not Yet Implemented
+## Not Yet Implemented — Phase 1 Remaining
 
-- MessagePack encoding of delta packets (deferred)
-- Transport send (KCP or WSS) of encoded packets (deferred)
+Phase 1 items not yet implemented:
+
+```txt
+- MessagePack encoding of PlayerDelta packets
+- Transport send (KCP or WSS) of encoded PlayerDelta packets
+- FullSnapshot on join/reconnect (deferred — FullSnapshot is a separate message type)
+- Cluster-based interest set wired into buildDeltaBatches (spec complete, not coded)
+- ClusterConfig in RoomConfig
+- ClusterAllocator called from room tick
+```
+
+## Deferred / Future Scope
+
+The following are not Phase 1 implementation targets:
+
+```txt
+ObjectDelta:
 - Object interest management integration (spatial hash for objects)
 - Object snapshot cache (per-session last-seen object version)
-- `VoiceGroupDelta` (Milestone 5)
-- LOD/blue-avatar thresholds in interest set (deferred)
-- Full snapshot fallback on join/reconnect (deferred — FullSnapshot is a separate message type)
-- Per-client bandwidth accounting (deferred)
+- ObjectLockDelta
+- Deferred / Future Scope
+
+VoiceGroupDelta:
+- VoiceGroupAllocator integration
+- Voice snapshot cache
+- Deferred / Future Scope
+
+LOD/blue-avatar thresholds in interest set    — Deferred / Future Scope
+Per-client bandwidth accounting               — Deferred / Future Scope
+```
 
 ## Files
 

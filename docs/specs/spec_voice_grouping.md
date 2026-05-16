@@ -11,7 +11,7 @@ optional KMeansVoiceAllocator, VoiceGroupDelta.
 
 - Pluggable allocator interface.
 - Proximity-based default.
-- K-Means optional, not foundational.
+- K-Means is already used in Phase 1 as the position-based ClusterAllocator. For future voice grouping, K-Means is only an optional VoiceGroupAllocator policy and must not reuse Phase 1 cluster IDs without a separate design.
 - Max participants per group enforced.
 
 ## Files

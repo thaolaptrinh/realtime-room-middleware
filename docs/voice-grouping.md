@@ -14,5 +14,5 @@
 ## Hard Rules
 
 - Voice grouping is pluggable.
-- K-Means is optional, not foundational.
+- K-Means as a voice grouping policy is optional and deferred. Use `KMeansVoiceAllocator` behind `VoiceGroupAllocator` only if proximity-based allocation is insufficient. Do not conflate with Phase 1 `ClusterAllocator` (position-based sync grouping).
 - Max participants per group must be enforced.

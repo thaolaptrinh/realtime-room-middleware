@@ -139,6 +139,70 @@ Transport adapter detects close/error
   → room loop: emit player leave in next delta
 ```
 
+## Position Cluster Sync Architecture
+
+**Phase 1 gameplay implementation target.** Voice grouping, object locking, and object sync are deferred to future phases.
+
+### Data Flow: Player Transform Sync
+
+```
+KCP or WSS packet arrives at transport goroutine
+  → MessagePack envelope decode
+  → protocol version and message type validation
+  → room.Enqueue(RoomCommand{Kind: CmdPlayerInput, ...})
+  → (transport goroutine exits — no room state touched)
+
+Room loop (single goroutine per room):
+  → drain player input queue
+  → update PlayerState (position, rotation, animation state)
+  → set dirty mask on changed fields
+  → update spatial hash (player position → grid cell)
+  → run ClusterAllocator.Compute(players) → cluster assignments
+  → update per-player cluster membership
+
+Broadcast tick:
+  → for each session: compute interest set from cluster membership
+  → compute PlayerDelta (enter/update/leave) vs ClientSnapshotCache
+  → encode MessagePack payload
+  → enqueue outbound packet to RealtimeSession (KCP or WSS per session)
+```
+
+### Component Roles — Phase 1
+
+| Component | Role |
+|---|---|
+| `KCPTransport` / `WSSTransport` | Read packets, decode envelope, push to room queue. No room state mutation. |
+| `Room loop` | Only writer of `PlayerState`, `SpatialIndex`, and cluster assignments. |
+| `SpatialIndex` (GridSpatialHash) | Fast cell-based lookup of players by position. Updated by room loop. |
+| `ClusterAllocator` (KMeans) | Groups players by position into clusters. Called by room loop. Output drives interest sets. |
+| `InterestManager` | Builds per-client visible player sets from cluster membership. |
+| `DeltaBroadcaster` | Computes per-client PlayerDelta using `ClientSnapshotCache`. Sends to `RealtimeSession`. |
+| `RealtimeSession` | Transport abstraction. KCP or WSS session. Delivers encoded MessagePack packets. |
+
+### Phase 1 Cluster Allocator Rule
+
+The `ClusterAllocator` interface is the Phase 1 grouping primitive. K-Means is the first implementation. The interface is pluggable so future policies can be substituted without changing the room loop.
+
+```
+ClusterAllocator interface
+  └── KMeansClusterAllocator   (Phase 1)
+  └── ProximityClusterAllocator (future candidate)
+```
+
+Cluster allocation must not happen in transport goroutines. It is scheduled by the room loop at the room tick rate.
+
+### Deferred Features
+
+The following are defined in the architecture but are not Phase 1 implementation targets:
+
+```txt
+Voice grouping:      VoiceGroupAllocator, VoiceGroupDelta     — Deferred / Future Scope
+Object locking:      ObjectLockManager, lease TTL model        — Deferred / Future Scope
+Object sync:         ObjectState, ObjectDelta, object commands  — Deferred / Future Scope
+```
+
+Do not wire runtime behavior for deferred features until a future phase is explicitly started.
+
 ## Mixed Transport Room Semantics
 
 Native and WebGL clients may coexist in the same room instance.

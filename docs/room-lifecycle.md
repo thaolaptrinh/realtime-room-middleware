@@ -117,6 +117,41 @@ game:
 
 Phase 1 skeleton: tick drains command queue only. Full simulation added in Milestone 3–5.
 
+## Cluster Update Scheduling (Phase 1)
+
+The room loop owns cluster update scheduling. Cluster computation is part of the room tick, not a separate goroutine or transport worker.
+
+```
+Room tick (20 Hz):
+  drain player input queue
+  update PlayerState (position, rotation, animation state, dirty mask)
+  update spatial hash (player moved → update grid cell)
+  run ClusterAllocator.Compute(players) → cluster assignments
+  update per-player cluster membership
+
+Broadcast tick (10 Hz):
+  for each session:
+    build interest set from cluster membership
+    build PlayerDelta vs ClientSnapshotCache
+    encode MessagePack
+    enqueue to RealtimeSession (KCP or WSS)
+```
+
+Rules:
+
+- Cluster computation must not happen in transport goroutines (KCP read loop, WebSocket read loop).
+- Only the room loop calls `ClusterAllocator.Compute`.
+- Cluster output (player → cluster assignment map) is used by the delta builder at broadcast tick.
+- Cluster assignments are owned by the room loop and not accessed concurrently from transport goroutines.
+
+The room loop may later also own the following scheduled jobs — **these are Deferred / Future Scope and must not be implemented in Phase 1**:
+
+```txt
+Object lock expiration check  — Deferred / Future Scope
+Object command queue drain    — Deferred / Future Scope
+Voice group recompute         — Deferred / Future Scope
+```
+
 ## Overflow Room Behavior
 
 Not yet implemented. Design intent:
@@ -124,9 +159,36 @@ Not yet implemented. Design intent:
 - New joins are routed to the overflow instance with the same `LogicalRoomID`.
 - Live rooms are not migrated. Players complete their session in their assigned instance.
 
+## Deferred Room Features (Future Scope)
+
+The following room behaviors are part of the product architecture but are **not Phase 1 implementation targets**. Do not implement these until a future phase is explicitly started.
+
+```txt
+Object command queue drain:
+  - room loop processes ObjectCommand (LockObject, RefreshLock, ReleaseLock)
+  - Deferred / Future Scope
+
+Object lock expiration:
+  - room loop calls ObjectLockManager.ReleaseExpired on each tick
+  - Deferred / Future Scope
+
+Object sync delta:
+  - room loop builds ObjectDelta per client
+  - Deferred / Future Scope
+
+Voice group recompute:
+  - room loop calls VoiceGroupAllocator.Allocate periodically
+  - Deferred / Future Scope
+
+Object lock release on disconnect:
+  - CmdDisconnect releases all object locks owned by the session
+  - Deferred / Future Scope
+```
+
 ## Hard Rules
 
 - Do not migrate live rooms.
 - Room loop is the only writer of room state.
 - `RoomInstance` in the registry tracks metadata only; live state lives in `Room`.
 - Phase 1 registry (`InMemoryRoomRegistry`) has no external dependencies.
+- Cluster computation runs in the room loop only — not in transport goroutines.

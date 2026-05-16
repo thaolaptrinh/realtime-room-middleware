@@ -73,30 +73,33 @@ type Envelope struct {
 
 ### Client → Server (range 1-99)
 
-| Type | ID | Struct       | Status      |
-|------|----|--------------|-------------|
-| Hello | 1 | `Hello`       | Implemented |
-| JoinRoom | 2 | `JoinRoom`    | Implemented |
-| Reconnect | 3 | —             | Reserved    |
-| PlayerInput | 4 | —         | Reserved    |
-| Ping | 5 | `Ping`         | Implemented |
+| Type | ID | Struct | Phase | Status |
+|------|----|--------|-------|--------|
+| Hello | 1 | `Hello` | 1 | Implemented |
+| JoinRoom | 2 | `JoinRoom` | 1 | Implemented |
+| Reconnect | 3 | — | Future | Reserved |
+| PlayerInput | 4 | `PlayerInput` | 1 | Reserved — Phase 1 |
+| Ping | 5 | `Ping` | 1 | Implemented |
+| PlayerTransformUpdate | 6 | `PlayerTransformUpdate` | 1 | Reserved — Phase 1 |
+| LeaveRoom | 7 | — | Future | Reserved |
 
 ### Server → Client (range 1000-1999)
 
-| Type | ID | Struct              | Status      |
-|------|----|---------------------|-------------|
-| Welcome | 1001 | `Welcome`        | Implemented |
-| JoinAccepted | 1002 | `JoinAccepted` | Implemented |
-| ReconnectAccepted | 1003 | —         | Reserved    |
-| ReconnectRejected | 1004 | —         | Reserved    |
-| FullSnapshot | 1005 | —             | Reserved    |
-| PlayerDelta | 1006 | —              | Reserved    |
-| ObjectDelta | 1007 | —               | Reserved    |
-| VoiceGroupDelta | 1008 | —           | Reserved    |
-| LockAccepted | 1009 | —              | Reserved    |
-| LockRejected | 1010 | —               | Reserved    |
-| Error | 1100 | `ServerError`      | Implemented |
-| Pong | 1101 | `Pong`             | Implemented |
+| Type | ID | Struct | Phase | Status |
+|------|----|--------|-------|--------|
+| Welcome | 1001 | `Welcome` | 1 | Implemented |
+| JoinAccepted | 1002 | `JoinAccepted` | 1 | Implemented |
+| ReconnectAccepted | 1003 | — | Future | Reserved |
+| ReconnectRejected | 1004 | — | Future | Reserved |
+| FullSnapshot | 1005 | `FullSnapshot` | 1 | Reserved — Phase 1 |
+| PlayerDelta | 1006 | `PlayerDelta` | 1 | Reserved — Phase 1 |
+| ObjectDelta | 1007 | — | Future | Reserved — Deferred |
+| VoiceGroupDelta | 1008 | — | Future | Reserved — Deferred |
+| LockAccepted | 1009 | — | Future | Reserved — Deferred |
+| LockRejected | 1010 | — | Future | Reserved — Deferred |
+| ClusterMembershipDelta | 1011 | — | 1 (optional) | Reserved — optional Phase 1 |
+| Error | 1100 | `ServerError` | 1 | Implemented |
+| Pong | 1101 | `Pong` | 1 | Implemented |
 
 ## Message Wire Formats
 
@@ -191,6 +194,122 @@ type Pong struct {
 }
 ```
 
+---
+
+## Phase 1 Message Wire Formats (Reserved — Not Yet Implemented)
+
+The following message types are reserved for Phase 1 implementation. Wire formats are specified here to lock the schema before coding begins. No wire-format change may occur after first Unity client integration without a protocol version bump.
+
+### PlayerInput (client → server, type 4)
+
+Sent by the client at the player's input rate. Contains movement intent (not authoritative position).
+
+```go
+type PlayerInput struct {
+    Seq      uint32  `msgpack:"s"`   // client input sequence number
+    MoveX    float32 `msgpack:"mx"`  // movement direction X (-1.0 to 1.0)
+    MoveZ    float32 `msgpack:"mz"`  // movement direction Z (-1.0 to 1.0)
+    Yaw      float32 `msgpack:"y"`   // player facing angle (radians)
+    AnimState uint16 `msgpack:"a"`   // animation state bitmask
+}
+```
+
+### PlayerTransformUpdate (client → server, type 6)
+
+Sent by the client when authoritative client-side position is available (e.g., physics result). Supplements or replaces `PlayerInput` depending on server authority model.
+
+```go
+type PlayerTransformUpdate struct {
+    Seq      uint32  `msgpack:"s"`   // client sequence number
+    X        float32 `msgpack:"x"`   // world position X
+    Z        float32 `msgpack:"z"`   // world position Z
+    Yaw      float32 `msgpack:"y"`   // facing angle (radians)
+    AnimState uint16 `msgpack:"a"`   // animation state bitmask
+}
+```
+
+### FullSnapshot (server → client, type 1005)
+
+Sent once on join and on explicit resync request. Contains the full visible state for the joining session.
+
+```go
+type FullSnapshot struct {
+    Tick    uint32          `msgpack:"tk"` // server tick at snapshot time
+    Players []PlayerSnapshot `msgpack:"pl"` // all players visible to this session
+}
+
+type PlayerSnapshot struct {
+    PlayerID  string  `msgpack:"pid"` // player identifier
+    X         float32 `msgpack:"x"`
+    Z         float32 `msgpack:"z"`
+    Yaw       float32 `msgpack:"y"`
+    AnimState uint16  `msgpack:"a"`
+    Version   uint32  `msgpack:"v"`  // state version for delta tracking
+}
+```
+
+### PlayerDelta (server → client, type 1006)
+
+Sent at broadcast rate (default 10 Hz). Contains only changes since last broadcast for this client's interest set.
+
+```go
+type PlayerDelta struct {
+    Tick    uint32               `msgpack:"tk"`
+    Enters  []PlayerEnterDelta   `msgpack:"en"` // newly visible players
+    Updates []PlayerUpdateDelta  `msgpack:"up"` // visible players with changed state
+    Leaves  []PlayerLeaveDelta   `msgpack:"lv"` // players that left the interest range
+}
+
+type PlayerEnterDelta struct {
+    PlayerID  string  `msgpack:"pid"`
+    X         float32 `msgpack:"x"`
+    Z         float32 `msgpack:"z"`
+    Yaw       float32 `msgpack:"y"`
+    AnimState uint16  `msgpack:"a"`
+    Version   uint32  `msgpack:"v"`
+}
+
+type PlayerUpdateDelta struct {
+    PlayerID  string  `msgpack:"pid"`
+    X         float32 `msgpack:"x"`
+    Z         float32 `msgpack:"z"`
+    Yaw       float32 `msgpack:"y"`
+    AnimState uint16  `msgpack:"a"`
+    Version   uint32  `msgpack:"v"`
+}
+
+type PlayerLeaveDelta struct {
+    PlayerID string `msgpack:"pid"`
+}
+```
+
+Empty `PlayerDelta` (all slices nil/empty) must not be sent. The room skips encoding and sending if `PlayerDelta.IsEmpty()`.
+
+### ClusterMembershipDelta (server → client, type 1011) — Optional Phase 1
+
+Informs the client of its current cluster assignment. Optional in Phase 1; the client does not need cluster membership to render. Useful for debugging and future voice grouping pre-wiring.
+
+Reserved. Wire format TBD if implemented in Phase 1.
+
+---
+
+## Deferred Protocol Message Areas
+
+The following message types are **reserved** in the type table but are **not Phase 1 implementation targets**. Do not implement wire format or encoding for these until the relevant phase begins.
+
+```txt
+ObjectDelta (1007)       — Deferred / Future Scope — object sync
+VoiceGroupDelta (1008)   — Deferred / Future Scope — voice grouping
+LockAccepted (1009)      — Deferred / Future Scope — object locking
+LockRejected (1010)      — Deferred / Future Scope — object locking
+Reconnect (3)            — Deferred / Future Scope — reconnect flow
+LeaveRoom (7)            — Deferred / Future Scope — graceful leave
+```
+
+No JSON realtime gameplay payloads exist for any message type on either transport. All reserved types will use MessagePack when implemented.
+
+---
+
 ## Mixed Transport Room Semantics
 
 Native and WebGL clients may coexist in the same room instance.
@@ -233,18 +352,29 @@ Token validation on the game server is not yet implemented.
 
 ## Not Yet Implemented
 
-The following are reserved and documented but not yet coded:
+### Phase 1 — Reserved and Specified, Not Yet Coded
 
-- Reconnect / ReconnectAccepted / ReconnectRejected
-- PlayerInput
-- FullSnapshot
-- PlayerDelta
-- ObjectDelta
-- VoiceGroupDelta
-- LockAccepted / LockRejected
-- LeaveRoom (client → server)
+Wire formats are specified above. Implementation is the Phase 1 gameplay milestone.
 
-These will be implemented in later milestones.
+```txt
+PlayerInput (4)              — spec above
+PlayerTransformUpdate (6)    — spec above
+FullSnapshot (1005)          — spec above
+PlayerDelta (1006)           — spec above
+ClusterMembershipDelta (1011) — optional, wire format TBD
+```
+
+### Deferred / Future Scope
+
+Reserved type IDs only. Wire formats will be defined when the relevant phase begins.
+
+```txt
+Reconnect (3) / ReconnectAccepted (1003) / ReconnectRejected (1004) — Deferred
+LeaveRoom (7)        — Deferred
+ObjectDelta (1007)   — Deferred (object sync)
+VoiceGroupDelta (1008) — Deferred (voice grouping)
+LockAccepted (1009) / LockRejected (1010) — Deferred (object locking)
+```
 
 ## Protocol v2 Future Candidate: Protobuf
 
