@@ -8,6 +8,8 @@ import (
 	"time"
 
 	kcp "github.com/xtaci/kcp-go"
+
+	"github.com/thaonguyen/realtime-room-middleware/internal/transport"
 )
 
 func TestServerConfigValidate_Valid(t *testing.T) {
@@ -264,6 +266,41 @@ func TestServerDefaults(t *testing.T) {
 	}
 	if cfg.sendQueueSize() != defaultSendQueueSize {
 		t.Fatalf("expected default sendQueueSize %d, got %d", defaultSendQueueSize, cfg.sendQueueSize())
+	}
+}
+
+func TestKCPSessionTransportType(t *testing.T) {
+	handler := HandlerFunc(func(sess Session, data []byte) {})
+	srv, err := NewServer(ServerConfig{ListenAddr: ":0"}, handler)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer srv.Stop()
+
+	conn, err := kcp.Dial(srv.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("trigger write: %v", err)
+	}
+
+	sess := waitForSession(t, srv, 2*time.Second)
+	if sess == nil {
+		t.Fatal("session not created within deadline")
+	}
+
+	if sess.Transport() != transport.KCP {
+		t.Fatalf("expected transport %q, got %q", transport.KCP, sess.Transport())
 	}
 }
 

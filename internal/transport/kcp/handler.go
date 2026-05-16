@@ -1,11 +1,25 @@
 package kcp
 
-import "net"
+import (
+	"net"
+
+	"github.com/thaonguyen/realtime-room-middleware/internal/transport"
+)
 
 // Session represents a connected KCP client session.
+// It is a superset of transport.RealtimeSession, adding KCP-specific
+// methods used internally by the server (RemoteAddr, IsClosed).
 type Session interface {
 	// ID returns the unique session identifier.
 	ID() string
+
+	// UserID returns the authenticated player ID. Empty until token validation
+	// is implemented in a later milestone.
+	UserID() string
+
+	// Transport reports the transport type. Always returns transport.KCP.
+	// Used for observability only — must not branch game logic.
+	Transport() transport.TransportType
 
 	// RemoteAddr returns the remote network address.
 	RemoteAddr() net.Addr

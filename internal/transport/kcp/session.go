@@ -8,21 +8,28 @@ import (
 	"time"
 
 	kcp "github.com/xtaci/kcp-go"
+
+	"github.com/thaonguyen/realtime-room-middleware/internal/transport"
 )
 
 // kcpSession wraps a KCP connection with safe lifecycle management.
 type kcpSession struct {
-	id     string
-	conn   *kcp.UDPSession
-	server *KCPServer
-	sendCh chan []byte
-	closed chan struct{}
+	id        string
+	conn      *kcp.UDPSession
+	server    *KCPServer
+	sendCh    chan []byte
+	closed    chan struct{}
 	closeOnce sync.Once
-	logger *slog.Logger
+	logger    *slog.Logger
 }
 
-func (s *kcpSession) ID() string       { return s.id }
-func (s *kcpSession) RemoteAddr() net.Addr { return s.conn.RemoteAddr() }
+// Compile-time check: kcpSession must satisfy the shared RealtimeSession interface.
+var _ transport.RealtimeSession = (*kcpSession)(nil)
+
+func (s *kcpSession) ID() string                         { return s.id }
+func (s *kcpSession) UserID() string                     { return "" }
+func (s *kcpSession) Transport() transport.TransportType { return transport.KCP }
+func (s *kcpSession) RemoteAddr() net.Addr               { return s.conn.RemoteAddr() }
 
 // IsClosed reports whether the session has been closed.
 func (s *kcpSession) IsClosed() bool {
