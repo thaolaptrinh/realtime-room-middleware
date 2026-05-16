@@ -169,6 +169,17 @@ type Pong struct {
 - **Minor version bump**: backward-compatible field addition
 - **Patch**: server-only behavior change
 
+## Gateway HTTP Control Plane
+
+The HTTP Gateway (`:8080`) is separate from the KCP realtime data plane documented here.
+The Gateway uses JSON for control-plane requests (health checks, room join).
+
+See `docs/specs/spec_gateway_join.md` for Gateway route details.
+
+Key relationship: `POST /join` returns a `session_token` that the client includes
+in the KCP `JoinRoom` message. Token validation on the game server is not yet
+implemented.
+
 ## Not Yet Implemented
 
 The following are reserved and documented but not yet coded:
