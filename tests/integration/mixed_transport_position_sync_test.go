@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thaonguyen/realtime-room-middleware/internal/app/realtime"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/bridge"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/delta"
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/handler"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/player"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/room"
 	"github.com/thaonguyen/realtime-room-middleware/internal/protocol"
@@ -325,6 +327,92 @@ func TestMixedTransport_PlayerDeltaBothReceive(t *testing.T) {
 	}
 
 	_ = lookup
+}
+
+func TestMixedTransport_ReceiveAdapterKCPAndWSS(t *testing.T) {
+	reg := room.NewInMemoryRoomRegistry()
+	mgr := room.NewRoomManager(reg, room.DefaultRoomConfig(), slog.Default())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "receive-adapter-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	kcpSession := &fakeRealtimeSession{id: "kcp-recv-1", transport: transport.KCP}
+	wssSession := &fakeRealtimeSession{id: "wss-recv-1", transport: transport.WebSocket}
+
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: room.SessionID(kcpSession.ID()),
+		PlayerID:  "player-kcp",
+		UserID:    "user-kcp",
+		Timestamp: time.Now(),
+	})
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: room.SessionID(wssSession.ID()),
+		PlayerID:  "player-wss",
+		UserID:    "user-wss",
+		Timestamp: time.Now(),
+	})
+
+	if !waitFor(func() bool { return r.PlayerCount() == 2 }, 500*time.Millisecond) {
+		t.Fatalf("PlayerCount = %d, want 2", r.PlayerCount())
+	}
+
+	roomResolver := func(sessionID string) (handler.RoomEnqueuer, error) {
+		return r, nil
+	}
+	sessionResolver := func(sessionID string) (string, string) {
+		switch sessionID {
+		case kcpSession.ID():
+			return "player-kcp", "user-kcp"
+		case wssSession.ID():
+			return "player-wss", "user-wss"
+		default:
+			return "", ""
+		}
+	}
+
+	h := handler.NewRealtimePacketHandler(roomResolver)
+	router := realtime.NewSessionPacketRouter(sessionResolver)
+	proc := realtime.NewPacketProcessor(h, router, slog.Default())
+	adapter := realtime.NewReceiveLoopAdapter(proc, slog.Default())
+
+	msg := protocol.PlayerTransformUpdate{Seq: 1, X: 42.0, Z: -17.0, Yaw: 0.5}
+	data, err := protocol.EncodeAndWrap(protocol.CurrentVersion, protocol.TypePlayerTransformUpdate, 1, 0, &msg)
+	if err != nil {
+		t.Fatalf("EncodeAndWrap: %v", err)
+	}
+
+	adapter.HandlePacket(kcpSession, data)
+	adapter.HandlePacket(wssSession, data)
+
+	if !waitFor(func() bool {
+		_, v1, _ := r.GetPlayerState("player-kcp")
+		_, v2, _ := r.GetPlayerState("player-wss")
+		return v1 > 0 && v2 > 0
+	}, 500*time.Millisecond) {
+		t.Fatal("player transforms not updated through receive adapter")
+	}
+
+	ps1, _, _ := r.GetPlayerState("player-kcp")
+	ps2, _, _ := r.GetPlayerState("player-wss")
+
+	if ps1.Position.X != 42.0 {
+		t.Errorf("KCP player X = %f, want 42.0", ps1.Position.X)
+	}
+	if ps1.Position.Z != -17.0 {
+		t.Errorf("KCP player Z = %f, want -17.0", ps1.Position.Z)
+	}
+	if ps2.Position.X != 42.0 {
+		t.Errorf("WSS player X = %f, want 42.0", ps2.Position.X)
+	}
+	if ps2.Position.Z != -17.0 {
+		t.Errorf("WSS player Z = %f, want -17.0", ps2.Position.Z)
+	}
 }
 
 func TestMixedTransport_SendErrorDoesNotAffectOther(t *testing.T) {
