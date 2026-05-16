@@ -6,11 +6,47 @@
 
 Supported range: `[1, 1]`
 
+## Protocol v1 Summary
+
+Protocol v1 uses MessagePack as the shared application/gameplay payload format across all realtime transports.
+
+Two realtime transport adapters are supported:
+
+| Platform        | Transport         |
+|-----------------|-------------------|
+| Unity native    | KCP over UDP      |
+| Unity WebGL     | WSS/WebSocket     |
+
+The application-layer envelope, message types, and wire formats are **identical** on both transports. Transport selection is determined by the client platform at session open and is invisible to the room loop, delta broadcaster, and all game logic.
+
+The HTTP/JSON Gateway remains the control plane for all clients. JSON is not used for realtime gameplay packets on either transport.
+
 ## Transport
 
-- Realtime data plane: KCP over UDP `:9000`
-- Serialization: MessagePack (vmihailenco/msgpack/v5)
 - Control plane: HTTP/TCP JSON Gateway `:8080` (not covered here)
+- Serialization: MessagePack (vmihailenco/msgpack/v5) — both realtime transports
+- Realtime data plane (Unity native): KCP over UDP `:9000`
+- Realtime data plane (Unity WebGL): WSS/WebSocket (TLS required, port TBD)
+
+## Client Platform Support
+
+| Platform        | Transport         | Status      |
+|-----------------|-------------------|-------------|
+| Unity native    | KCP/UDP           | Implemented |
+| Unity WebGL     | WSS/WebSocket     | Reserved    |
+
+## Transport Matrix
+
+| Property                  | KCP/UDP              | WSS/WebSocket        |
+|---------------------------|----------------------|----------------------|
+| Target clients            | Unity native         | Unity WebGL          |
+| Payload format            | MessagePack          | MessagePack          |
+| Envelope                  | Identical            | Identical            |
+| Message types             | Identical            | Identical            |
+| Protocol version          | Same negotiation     | Same negotiation     |
+| Latency/jitter            | Lower (no TCP HOL)   | Higher (TCP HOL)     |
+| Browser/WebGL compatible  | No                   | Yes                  |
+| JSON for gameplay packets  | No                   | No                   |
 
 ## Envelope
 
@@ -155,6 +191,20 @@ type Pong struct {
 }
 ```
 
+## Mixed Transport Room Semantics
+
+Native and WebGL clients may coexist in the same room instance.
+
+Rules:
+
+- The application-layer envelope and all message types are identical regardless of transport.
+- The room loop and delta broadcaster are transport-agnostic.
+- Transport selection is per-client, resolved at session open, and invisible to room logic.
+- Transport differences (latency, jitter) do not change gameplay semantics or message structure.
+- JSON must not be used for realtime gameplay packets on either transport.
+- A client's transport type does not determine which room events it receives.
+- `FullSnapshot`, `PlayerDelta`, `ObjectDelta`, and `VoiceGroupDelta` are sent to all interested clients regardless of transport.
+
 ## Compatibility Rules
 
 1. **Every packet carries a protocol version.** The server rejects packets with versions outside `[MinVersion, MaxVersion]`.
@@ -177,8 +227,9 @@ The Gateway uses JSON for control-plane requests (health checks, room join).
 See `docs/specs/spec_gateway_join.md` for Gateway route details.
 
 Key relationship: `POST /join` returns a `session_token` that the client includes
-in the KCP `JoinRoom` message. Token validation on the game server is not yet
-implemented.
+in the `JoinRoom` message — whether the session uses KCP (Unity native) or WSS
+(Unity WebGL). The `JoinRoom` wire format is identical on both transports.
+Token validation on the game server is not yet implemented.
 
 ## Not Yet Implemented
 
@@ -199,7 +250,7 @@ These will be implemented in later milestones.
 
 Protobuf is not rejected forever. It is the preferred future candidate if the protocol needs stronger schema governance. However, it is deferred intentionally.
 
-**MessagePack remains the production Protocol v1.** No Protobuf implementation, `.proto` files, or protobuf dependencies exist or will be added at this stage.
+**MessagePack remains the production Protocol v1 on both transports (KCP and WSS).** No Protobuf implementation, `.proto` files, or protobuf dependencies exist or will be added at this stage.
 
 ### Why Protobuf is deferred
 
@@ -210,7 +261,7 @@ Protocol v1 uses MessagePack because the protocol is still evolving and MessageP
 Protocol v2 may be considered only when all of the following are true:
 
 1. Protocol v1 MessagePack schema has stabilized.
-2. Unity client contract has been validated in production.
+2. Unity client contract has been validated in production on both native and WebGL platforms.
 3. Production load tests provide packet size, bandwidth, and CPU data.
 4. Multiple Unity client versions must be supported long-term.
 5. The team accepts Go + Unity/C# code generation workflow.
@@ -220,6 +271,7 @@ Protocol v2 may be considered only when all of the following are true:
 ### Migration rules
 
 - Any Protobuf migration must be treated as a **Protocol v2 migration**, not a silent codec swap.
-- Protocol v2 must support explicit compatibility and migration rules.
+- Protocol v2 must support explicit compatibility and migration rules for both transports.
 - Protocol v1 and v2 may need to coexist during migration.
-- The KCP transport layer is codec-agnostic; only the serialization layer changes.
+- Both the KCP and WSS transport layers are codec-agnostic; only the serialization layer changes.
+- A Protocol v2 migration does not change which transports are supported.

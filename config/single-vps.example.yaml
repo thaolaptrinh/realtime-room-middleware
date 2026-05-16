@@ -6,6 +6,7 @@ gateway:
 
 game:
   kcp_addr: ":9000"
+  websocket_addr: ":9001"
   tick_rate_hz: 20
   broadcast_rate_hz: 10
   max_players_per_room: 200
@@ -18,6 +19,7 @@ protocol:
 resolver:
   type: single-node
   single_node_addr: "127.0.0.1:9000"
+  single_node_websocket_url: "wss://example.com/realtime"
 
 registry:
   type: memory

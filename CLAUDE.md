@@ -25,6 +25,11 @@ Custom realtime middleware server for Unity, replacing part of Normcore synchron
 - Object locking uses server command queue + lease TTL
 - Voice grouping is pluggable; K-Means is optional, not foundational
 
+## Implementation Phase
+
+- **Current target:** Phase 1 — single-vps production.
+- **Distributed K3s:** docs, skeleton, and placeholder files only. Do not implement distributed runtime until Phase 2 is explicitly started.
+
 ## Hard Rules
 
 - Do not full-broadcast room state in normal ticks.
@@ -37,6 +42,18 @@ Custom realtime middleware server for Unity, replacing part of Normcore synchron
 - Do not edit secrets or .env files.
 - Do not deploy or restart production services unless explicitly approved.
 - Do not claim 200 CCU capacity without measured load test results.
+
+## Transport Rules
+
+- Unity native clients use KCP/UDP `:9000`.
+- Unity WebGL clients use WSS/WebSocket `:9001`.
+- Both transports carry the same MessagePack Protocol v1 payloads — one shared application/gameplay protocol, not two.
+- Do not create separate gameplay message types or schemas for native vs WebGL.
+- Do not use JSON for realtime gameplay packets on either transport.
+- Do not implement Protobuf for Protocol v1. Protobuf is deferred to a future Protocol v2.
+- Transport adapters must not mutate room state. Only the room loop writes room state.
+- Native and WebGL clients may coexist in the same room instance.
+- Mixed transport tests (KCP senders + WebSocket receivers, and vice versa) are required before declaring production readiness.
 
 ## Verification
 

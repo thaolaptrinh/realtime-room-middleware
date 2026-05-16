@@ -13,11 +13,12 @@ import (
 
 // NodeAssignment is the result of resolving a logical room to a game node.
 type NodeAssignment struct {
-	RoomInstanceID string    // physical room instance ID
-	GameNodeAddr   string    // game server UDP address (host:port)
-	KCPAddr        string    // KCP listen address (same as GameNodeAddr for single-node)
+	RoomInstanceID  string // physical room instance ID
+	GameNodeAddr    string // game server host address
+	KCPAddr         string // KCP/UDP address (host:port); empty if not configured
+	WebSocketURL    string // public WSS URL (e.g. wss://host/realtime); empty if not configured
 	ProtocolVersion uint16
-	ExpiresAt      time.Time // when the assignment token expires
+	ExpiresAt       time.Time // when the assignment token expires
 }
 
 // AssignOptions carries optional parameters for room assignment.
@@ -35,17 +36,21 @@ type NodeResolver interface {
 // SingleNodeResolver returns a fixed local game server address for all rooms.
 // Used in dev and single-vps modes where there is one game server process.
 type SingleNodeResolver struct {
-	kcpAddr        string
+	kcpAddr         string
+	websocketURL    string
 	protocolVersion uint16
-	tokenTTL       time.Duration
+	tokenTTL        time.Duration
 }
 
-// NewSingleNodeResolver creates a resolver that always returns the configured single node address.
-func NewSingleNodeResolver(kcpAddr string, protocolVersion int) *SingleNodeResolver {
+// NewSingleNodeResolver creates a resolver that always returns the configured single node addresses.
+// websocketURL is the public-facing WSS URL returned to WebGL clients; pass empty string to
+// disable WebSocket transport in join responses.
+func NewSingleNodeResolver(kcpAddr, websocketURL string, protocolVersion int) *SingleNodeResolver {
 	return &SingleNodeResolver{
-		kcpAddr:        kcpAddr,
+		kcpAddr:         kcpAddr,
+		websocketURL:    websocketURL,
 		protocolVersion: uint16(protocolVersion),
-		tokenTTL:       5 * time.Minute,
+		tokenTTL:        5 * time.Minute,
 	}
 }
 
@@ -56,6 +61,7 @@ func (r *SingleNodeResolver) ResolveRoom(ctx context.Context, logicalRoomID stri
 		RoomInstanceID:  instanceID,
 		GameNodeAddr:    r.kcpAddr,
 		KCPAddr:         r.kcpAddr,
+		WebSocketURL:    r.websocketURL,
 		ProtocolVersion: r.protocolVersion,
 		ExpiresAt:       time.Now().Add(r.tokenTTL),
 	}, nil

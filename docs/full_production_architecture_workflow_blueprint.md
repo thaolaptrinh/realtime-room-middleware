@@ -47,8 +47,10 @@ Core design:
 
 ```txt
 HTTP/TCP Gateway        = control plane
-KCP over UDP            = realtime data plane
-MessagePack             = realtime payload serialization
+KCP over UDP            = realtime data plane (Unity native)
+WSS/WebSocket           = realtime data plane (Unity WebGL)
+MessagePack             = realtime payload serialization (both transports)
+RealtimeSession         = transport abstraction layer
 Spatial Hashing         = interest management core
 Delta Broadcast         = bandwidth optimization core
 Room Loop               = single authority for room state mutation
@@ -94,20 +96,40 @@ Control plane:
 - JSON
 - Gateway port :8080
 
-Realtime data plane:
+Realtime data plane (Unity native):
 - KCP over UDP
 - MessagePack
 - Game server port :9000
+
+Realtime data plane (Unity WebGL):
+- WSS/WebSocket (TLS)
+- MessagePack
+- Game server port :9001 (or TLS path, TBD)
+
+Shared application protocol:
+- MessagePack envelope and message types — identical on both transports
+- Transport selection is per-client and invisible to room logic
+- JSON must not be used for realtime gameplay packets on either transport
 ```
 
-### 2.2 Why KCP
+### 2.2 Why KCP (Unity native)
 
-KCP is the best practical fit for the realtime sync layer because:
+KCP is the best practical fit for Unity native clients because:
 
 - It avoids TCP/WebSocket head-of-line blocking behavior under packet loss.
 - It is more production-practical than raw UDP because reliability, ordering, retransmission, and congestion behavior are already handled at the KCP layer.
 - It is suitable for movement, rotation, object deltas, lock commands/results, full snapshots, and proximity metadata.
 - It gives a better engineering-cost/performance tradeoff than implementing a custom UDP transport.
+
+### 2.2b Why WSS/WebSocket (Unity WebGL)
+
+WSS/WebSocket is required for Unity WebGL clients because:
+
+- Browser and Unity WebGL runtime cannot open raw UDP sockets.
+- KCP over UDP is not available in the WebGL environment.
+- WSS (TLS WebSocket) is the only standards-compliant realtime transport available to browser-based Unity WebGL.
+- Higher latency and jitter are expected vs KCP due to TCP head-of-line blocking, but gameplay semantics remain identical.
+- WSS carries the same MessagePack envelope and message types as KCP — no separate WebGL gameplay protocol exists.
 
 ### 2.3 Why MessagePack
 
@@ -149,16 +171,18 @@ Protocol v2 may be reconsidered only when:
 
 ### 2.4 What Not to Use for Realtime Core
 
-Rejected for realtime data plane:
+Not used for Unity native realtime data plane:
 
 ```txt
 WebSocket/TCP:
-- easier to implement
-- but poorer latency behavior under packet loss for movement sync
+- poorer latency behavior under packet loss for movement sync
+- KCP/UDP is preferred for Unity native clients
+- WSS/WebSocket IS required for Unity WebGL — it is not rejected for WebGL
 
-Raw UDP:
+Raw UDP (custom):
 - best theoretical performance
 - but too high engineering cost/risk for this project stage
+- KCP provides comparable control with a managed reliability layer
 ```
 
 Still use HTTP/TCP for:
@@ -177,31 +201,31 @@ Still use HTTP/TCP for:
 ### 3.1 High-Level Flow
 
 ```txt
-Unity Client
-   |
-   | HTTP :8080
-   v
-Gateway
-   |
-   | join response:
-   | - game node UDP address
-   | - room instance id
-   | - session token
-   | - protocol version
-   v
-Unity Client
-   |
-   | KCP/UDP :9000 + MessagePack
-   v
-Game Server
-   |
-   | Room loop
-   | Spatial hash
-   | Interest manager
-   | Object lock manager
-   | Delta broadcaster
-   v
-Room State
+Unity Client (native)              Unity Client (WebGL)
+        |                                  |
+        | HTTP :8080                        | HTTP :8080
+        v                                  v
+                  Gateway
+        |                                  |
+        | join response:                    | join response:
+        | - game node address              | - game node address
+        | - room instance id               | - room instance id
+        | - session token                  | - session token
+        | - protocol version               | - protocol version
+        v                                  v
+Unity Client (native)              Unity Client (WebGL)
+        |                                  |
+        | KCP/UDP :9000 + MessagePack       | WSS + MessagePack
+        v                                  v
+                  Game Server
+                       |
+             Room loop (transport-agnostic)
+             Spatial hash
+             Interest manager
+             Object lock manager
+             Delta broadcaster
+                       v
+                  Room State
 ```
 
 ### 3.2 Control Plane Responsibilities
@@ -364,6 +388,7 @@ Mode-specific logic belongs only in adapters and deployment folders.
 RoomManager
 Room
 SessionManager
+RealtimeSession (interface — transport abstraction)
 PlayerStateStore
 ObjectStateStore
 ObjectLockManager
@@ -373,6 +398,7 @@ VoiceGroupAllocator
 DeltaBroadcaster
 ProtocolCodec
 KCPTransport
+WSSTransport
 ```
 
 ### 5.2 Single Authority Mutation Rule
@@ -624,7 +650,9 @@ type ObjectState struct {
    - room instance id
    - session token
    - protocol version
-5. Unity opens KCP connection to game-server :9000.
+5. Unity opens transport connection to game-server:
+   - Native: KCP/UDP `:9000`
+   - WebGL: WSS (TLS WebSocket, port TBD)
 6. Unity sends Hello/JoinRoom via KCP + MessagePack.
 7. Game server validates token.
 8. Game server attaches session to room.
@@ -724,6 +752,10 @@ Pong
 - FullSnapshot is used for join/reconnect/resync.
 - Normal operation uses deltas.
 - Packet size must be measured in load tests.
+- MessagePack payload is identical on both transports (KCP and WSS).
+- Transport differences must not affect gameplay semantics or message structure.
+- JSON must not be used for realtime gameplay packets on either transport.
+- Native and WebGL clients share the same room events and delta messages.
 ```
 
 ### 9.5 Versioning Policy
@@ -1896,14 +1928,19 @@ Custom realtime middleware server for Unity, replacing part of Normcore synchron
 
 ## Transport
 - Control plane: HTTP/TCP JSON Gateway :8080
-- Realtime data plane: KCP over UDP :9000
-- Realtime payload: MessagePack
+- Realtime data plane (Unity native): KCP over UDP :9000
+- Realtime data plane (Unity WebGL): WSS/WebSocket (TLS)
+- Realtime payload: MessagePack (both transports)
 
 ## Core Architecture
+- Two realtime transports: KCP/UDP (native) and WSS/WebSocket (WebGL)
+- One shared MessagePack Protocol v1 across both transports
+- RealtimeSession interface abstracts transport from room logic
 - Spatial hashing for interest management
 - Delta broadcast for bandwidth reduction
 - Room loop is the only writer of room state
 - Network goroutines push inputs/commands into queues
+- Transport adapters must not mutate room state
 - Object locking uses server command queue + lease TTL
 - Voice grouping is pluggable; K-Means is optional, not foundational
 
@@ -2637,15 +2674,19 @@ These should remain true throughout implementation:
 4. Single VPS production does not require Docker, Redis, or K3s.
 5. Distributed production uses Redis, K3s, KEDA, and images.
 6. HTTP Gateway handles control plane.
-7. KCP handles realtime data plane.
-8. MessagePack handles realtime payload.
-9. Room loop is the only writer of room state.
-10. Spatial hashing is the interest management foundation.
-11. Delta broadcast prevents full-room full-state spam.
-12. Object locking uses command queue + lease TTL.
-13. Voice grouping is pluggable.
-14. K-Means is optional, not foundational.
-15. Bandwidth and 200 CCU capacity must be measured, not assumed.
+7. KCP/UDP handles realtime data plane for Unity native clients.
+8. WSS/WebSocket handles realtime data plane for Unity WebGL clients.
+9. MessagePack handles realtime payload on both transports.
+10. One shared MessagePack application/gameplay protocol — not two separate protocols.
+11. Transport adapters must not mutate room state.
+12. Room loop is the only writer of room state.
+13. Spatial hashing is the interest management foundation.
+14. Delta broadcast prevents full-room full-state spam.
+15. Object locking uses command queue + lease TTL.
+16. Voice grouping is pluggable.
+17. K-Means is optional, not foundational.
+18. Bandwidth and 200 CCU capacity must be measured, not assumed.
+19. Native and WebGL clients may coexist in the same room instance.
 ```
 
 ---
@@ -2658,7 +2699,8 @@ Start here:
 1. Repo skeleton
 2. Config profiles
 3. Protocol envelope
-4. KCP smoke server/client
+4. KCP smoke server/client (Unity native transport)
+4b. WSS transport adapter (Unity WebGL — Phase 1 requirement if WebGL release is required)
 5. Gateway /join
 6. RoomManager multi-room
 7. Player state + spatial hash

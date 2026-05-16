@@ -16,7 +16,7 @@ import (
 
 func newTestGateway(t *testing.T) *gatewayhttp.Server {
 	t.Helper()
-	r := resolver.NewSingleNodeResolver("127.0.0.1:9000", 1)
+	r := resolver.NewSingleNodeResolver("127.0.0.1:9000", "ws://localhost:9001/realtime", 1)
 	logger := observability.InitDefaultLogger("warn")
 	return gatewayhttp.NewServer(gatewayhttp.ServerConfig{
 		Addr:           ":0",
@@ -56,6 +56,7 @@ func TestGatewaySmokeJoinEndpoint(t *testing.T) {
 		UserID:                "smoke-user",
 		LogicalRoomID:         "smoke-room",
 		ClientProtocolVersion: 1,
+		ClientPlatform:        "native",
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest(http.MethodPost, "/join", bytes.NewReader(body))

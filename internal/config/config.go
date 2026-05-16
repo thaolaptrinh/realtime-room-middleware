@@ -32,6 +32,7 @@ type GatewayConfig struct {
 
 type GameConfig struct {
 	KCPAddr           string `yaml:"kcp_addr"`
+	WebSocketAddr     string `yaml:"websocket_addr"`
 	TickRateHz        int    `yaml:"tick_rate_hz"`
 	BroadcastRateHz   int    `yaml:"broadcast_rate_hz"`
 	MaxPlayersPerRoom int    `yaml:"max_players_per_room"`
@@ -44,9 +45,10 @@ type ProtocolConfig struct {
 }
 
 type ResolverConfig struct {
-	Type           string `yaml:"type"`
-	SingleNodeAddr string `yaml:"single_node_addr"`
-	RedisAddr      string `yaml:"redis_addr"`
+	Type                   string `yaml:"type"`
+	SingleNodeAddr         string `yaml:"single_node_addr"`
+	SingleNodeWebSocketURL string `yaml:"single_node_websocket_url"`
+	RedisAddr              string `yaml:"redis_addr"`
 }
 
 type RegistryConfig struct {
@@ -210,6 +212,11 @@ func validateGame(cfg *Config) error {
 	}
 	if !strings.HasPrefix(cfg.Game.KCPAddr, ":") && !strings.Contains(cfg.Game.KCPAddr, ":") {
 		return fmt.Errorf("game.kcp_addr %q is not a valid listen address", cfg.Game.KCPAddr)
+	}
+	if cfg.Game.WebSocketAddr != "" {
+		if !strings.HasPrefix(cfg.Game.WebSocketAddr, ":") && !strings.Contains(cfg.Game.WebSocketAddr, ":") {
+			return fmt.Errorf("game.websocket_addr %q is not a valid listen address", cfg.Game.WebSocketAddr)
+		}
 	}
 	if cfg.Game.TickRateHz <= 0 {
 		return fmt.Errorf("game.tick_rate_hz must be > 0, got %d", cfg.Game.TickRateHz)

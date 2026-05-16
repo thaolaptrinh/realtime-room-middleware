@@ -6,8 +6,10 @@ import (
 	"testing"
 )
 
+const testWebSocketURL = "ws://localhost:9001/realtime"
+
 func TestSingleNodeResolverReturnsConfiguredAddr(t *testing.T) {
-	r := NewSingleNodeResolver("127.0.0.1:9000", 1)
+	r := NewSingleNodeResolver("127.0.0.1:9000", testWebSocketURL, 1)
 
 	assign, err := r.ResolveRoom(context.Background(), "expo-room-a", AssignOptions{UserID: "user1"})
 	if err != nil {
@@ -20,6 +22,9 @@ func TestSingleNodeResolverReturnsConfiguredAddr(t *testing.T) {
 	if assign.KCPAddr != "127.0.0.1:9000" {
 		t.Errorf("KCPAddr = %q, want %q", assign.KCPAddr, "127.0.0.1:9000")
 	}
+	if assign.WebSocketURL != testWebSocketURL {
+		t.Errorf("WebSocketURL = %q, want %q", assign.WebSocketURL, testWebSocketURL)
+	}
 	if assign.ProtocolVersion != 1 {
 		t.Errorf("ProtocolVersion = %d, want 1", assign.ProtocolVersion)
 	}
@@ -28,8 +33,20 @@ func TestSingleNodeResolverReturnsConfiguredAddr(t *testing.T) {
 	}
 }
 
+func TestSingleNodeResolverEmptyWebSocketURL(t *testing.T) {
+	r := NewSingleNodeResolver("127.0.0.1:9000", "", 1)
+
+	assign, err := r.ResolveRoom(context.Background(), "expo-room-a", AssignOptions{UserID: "user1"})
+	if err != nil {
+		t.Fatalf("ResolveRoom: %v", err)
+	}
+	if assign.WebSocketURL != "" {
+		t.Errorf("WebSocketURL = %q, want empty string", assign.WebSocketURL)
+	}
+}
+
 func TestSingleNodeResolverInstanceIDPrefix(t *testing.T) {
-	r := NewSingleNodeResolver("127.0.0.1:9000", 1)
+	r := NewSingleNodeResolver("127.0.0.1:9000", testWebSocketURL, 1)
 
 	assign, err := r.ResolveRoom(context.Background(), "expo-room-a", AssignOptions{UserID: "user1"})
 	if err != nil {
@@ -42,7 +59,7 @@ func TestSingleNodeResolverInstanceIDPrefix(t *testing.T) {
 }
 
 func TestSingleNodeResolverDifferentRooms(t *testing.T) {
-	r := NewSingleNodeResolver("127.0.0.1:9000", 1)
+	r := NewSingleNodeResolver("127.0.0.1:9000", testWebSocketURL, 1)
 
 	a, _ := r.ResolveRoom(context.Background(), "room-a", AssignOptions{})
 	b, _ := r.ResolveRoom(context.Background(), "room-b", AssignOptions{})
@@ -56,7 +73,7 @@ func TestSingleNodeResolverDifferentRooms(t *testing.T) {
 }
 
 func TestSingleNodeResolverRespectsContextCancel(t *testing.T) {
-	r := NewSingleNodeResolver("127.0.0.1:9000", 1)
+	r := NewSingleNodeResolver("127.0.0.1:9000", testWebSocketURL, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

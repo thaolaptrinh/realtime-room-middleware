@@ -42,6 +42,7 @@ func main() {
 	case config.ResolverSingleNode:
 		nodeResolver = resolver.NewSingleNodeResolver(
 			cfg.Resolver.SingleNodeAddr,
+			cfg.Resolver.SingleNodeWebSocketURL,
 			cfg.Protocol.Version,
 		)
 	default:
