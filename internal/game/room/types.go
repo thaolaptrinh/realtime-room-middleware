@@ -55,10 +55,11 @@ func (s RoomStatus) String() string {
 
 // RoomConfig holds per-room configuration.
 type RoomConfig struct {
-	MaxPlayers       int // Maximum concurrent players allowed.
-	TickRateHz       int // Room simulation frequency (default 20).
-	BroadcastRateHz  int // Delta broadcast frequency (default 10).
-	CommandQueueSize int // Buffered command channel depth (default 256).
+	MaxPlayers       int     // Maximum concurrent players allowed.
+	TickRateHz       int     // Room simulation frequency (default 20).
+	BroadcastRateHz  int     // Delta broadcast frequency (default 10).
+	CommandQueueSize int     // Buffered command channel depth (default 256).
+	SpatialCellSizeM float32 // Spatial hash cell size in meters (default 10).
 }
 
 // DefaultRoomConfig returns a RoomConfig with production-default values.
@@ -68,6 +69,7 @@ func DefaultRoomConfig() RoomConfig {
 		TickRateHz:       20,
 		BroadcastRateHz:  10,
 		CommandQueueSize: 256,
+		SpatialCellSizeM: 10.0,
 	}
 }
 

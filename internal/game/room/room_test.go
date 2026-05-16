@@ -1043,3 +1043,343 @@ func TestRoom_CurrentTick(t *testing.T) {
 	}
 	t.Errorf("tick counter did not advance within deadline: got %d, want >= 3", r.CurrentTick())
 }
+
+// ---- Spatial index integration tests ---------------------------------------
+
+func TestRoom_SpatialInsertOnJoin(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "spatial-join-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: "s1",
+		PlayerID:  "p1",
+		UserID:    "u1",
+		Timestamp: time.Now(),
+	})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		nearby := r.NearbyPlayers("p1", 10)
+		if len(nearby) == 0 {
+			// Player at origin, no other players — query returns 0 which is correct.
+			// The spatial index has the player if NearbyPlayersAt finds them.
+			at := r.NearbyPlayersAt(player.Vector3{X: 0, Z: 0}, 5)
+			if len(at) == 1 {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("player not found in spatial index after join")
+}
+
+func TestRoom_SpatialRemoveOnLeave(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "spatial-leave-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r.PlayerCount() != 1 {
+		t.Fatalf("PlayerCount after join: got %d, want 1", r.PlayerCount())
+	}
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdLeave, SessionID: "s1", PlayerID: "p1", Timestamp: time.Now()})
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 0 {
+			at := r.NearbyPlayersAt(player.Vector3{X: 0, Z: 0}, 10)
+			if len(at) == 0 {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("player still in spatial index after leave")
+}
+
+func TestRoom_SpatialRemoveOnDisconnect(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "spatial-disconnect-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdDisconnect, SessionID: "s1", Timestamp: time.Now()})
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 0 {
+			at := r.NearbyPlayersAt(player.Vector3{X: 0, Z: 0}, 10)
+			if len(at) == 0 {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("player still in spatial index after disconnect")
+}
+
+func TestRoom_SpatialUpdateOnPlayerInput(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "spatial-input-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	input := player.PlayerInput{
+		Seq: 1,
+		Transform: player.PlayerTransform{
+			Position: player.Vector3{X: 50, Y: 0, Z: 50},
+			Rotation: player.IdentityQuaternion,
+		},
+		Timestamp: time.Now().UnixMilli(),
+	}
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:     room.CmdPlayerInput,
+		PlayerID: "p1",
+		Payload:  input,
+	})
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		at := r.NearbyPlayersAt(player.Vector3{X: 50, Z: 50}, 5)
+		if len(at) == 1 && at[0] == "p1" {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("spatial index not updated after CmdPlayerInput")
+}
+
+func TestRoom_SpatialUpdateOnDirectTransform(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "spatial-direct-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	transform := player.PlayerTransform{
+		Position: player.Vector3{X: 25, Y: 0, Z: 25},
+		Rotation: player.IdentityQuaternion,
+	}
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:     room.CmdUpdatePlayerTransform,
+		PlayerID: "p1",
+		Payload:  transform,
+	})
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		at := r.NearbyPlayersAt(player.Vector3{X: 25, Z: 25}, 5)
+		if len(at) == 1 && at[0] == "p1" {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("spatial index not updated after CmdUpdatePlayerTransform")
+}
+
+func TestRoom_NearbyPlayers(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "nearby-players-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Join two players: p1 at origin, p2 nearby.
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s2", PlayerID: "p2", UserID: "u2", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Move p2 to (5, 0, 5).
+	input := player.PlayerInput{
+		Seq: 1,
+		Transform: player.PlayerTransform{
+			Position: player.Vector3{X: 5, Y: 0, Z: 5},
+			Rotation: player.IdentityQuaternion,
+		},
+		Timestamp: time.Now().UnixMilli(),
+	}
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdPlayerInput, PlayerID: "p2", Payload: input})
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		nearby := r.NearbyPlayers("p1", 10)
+		if len(nearby) == 1 && nearby[0] == "p2" {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("NearbyPlayers did not find p2 near p1")
+}
+
+func TestRoom_NearbyPlayersExcludesSelf(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "nearby-self-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	nearby := r.NearbyPlayers("p1", 100)
+	if len(nearby) != 0 {
+		t.Errorf("NearbyPlayers should not include self, got %d: %v", len(nearby), nearby)
+	}
+}
+
+func TestRoom_NearbyPlayersNonexistentPlayer(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "nearby-nonexistent-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	nearby := r.NearbyPlayers("ghost", 100)
+	if len(nearby) != 0 {
+		t.Errorf("NearbyPlayers for nonexistent player should return nil, got %d", len(nearby))
+	}
+}
+
+func TestRoom_NearbyPlayersAt(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "nearby-at-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s2", PlayerID: "p2", UserID: "u2", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Both at origin. Query from origin should find both.
+	at := r.NearbyPlayersAt(player.Vector3{X: 0, Z: 0}, 5)
+	if len(at) != 2 {
+		t.Fatalf("NearbyPlayersAt origin: expected 2, got %d: %v", len(at), at)
+	}
+
+	found := map[string]bool{}
+	for _, id := range at {
+		found[string(id)] = true
+	}
+	if !found["p1"] || !found["p2"] {
+		t.Errorf("expected both p1 and p2, got %v", at)
+	}
+
+	// Query from far away should find none.
+	at = r.NearbyPlayersAt(player.Vector3{X: 100, Z: 100}, 5)
+	if len(at) != 0 {
+		t.Errorf("NearbyPlayersAt far: expected 0, got %d", len(at))
+	}
+}
+
+func TestRoom_SpatialConfigCustomCellSize(t *testing.T) {
+	reg := newTestRegistry()
+	cfg := room.DefaultRoomConfig()
+	cfg.SpatialCellSizeM = 5.0
+	mgr := room.NewRoomManager(reg, cfg, newTestLogger())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "custom-cell-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Room should work with custom cell size.
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		at := r.NearbyPlayersAt(player.Vector3{X: 0, Z: 0}, 5)
+		if len(at) == 1 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("custom cell size room should still index players")
+}

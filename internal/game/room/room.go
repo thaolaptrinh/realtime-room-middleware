@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/player"
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/spatial"
 )
 
 // Room is the runtime instance of a room.
@@ -56,6 +57,10 @@ type Room struct {
 	// External callers may read snapshots via GetPlayerState.
 	players map[player.PlayerID]*player.PlayerState
 
+	// spatial is the spatial hash index for proximity queries.
+	// Only mutated by the room loop (inside handleCommand under sessionMu).
+	spatial *spatial.GridSpatialHash
+
 	// cancel signals the tick loop to stop.
 	cancel context.CancelFunc
 	// done is closed by the tick loop goroutine when it exits.
@@ -71,6 +76,9 @@ func newRoom(spec RoomSpec, logger *slog.Logger) *Room {
 	if cfg.CommandQueueSize <= 0 {
 		cfg.CommandQueueSize = DefaultRoomConfig().CommandQueueSize
 	}
+	if cfg.SpatialCellSizeM <= 0 {
+		cfg.SpatialCellSizeM = DefaultRoomConfig().SpatialCellSizeM
+	}
 
 	return &Room{
 		instanceID:    spec.InstanceID,
@@ -85,6 +93,7 @@ func newRoom(spec RoomSpec, logger *slog.Logger) *Room {
 		activeSessions:   make(map[SessionID]sessionAttachment),
 		userSessionIndex: make(map[UserID]SessionID),
 		players:          make(map[player.PlayerID]*player.PlayerState),
+		spatial:          spatial.NewGridSpatialHash(spatial.SpatialConfig{CellSizeM: cfg.SpatialCellSizeM}),
 		done:             make(chan struct{}),
 	}
 }
@@ -179,4 +188,40 @@ func (r *Room) Enqueue(cmd RoomCommand) error {
 	default:
 		return fmt.Errorf("room %q command queue full", r.instanceID)
 	}
+}
+
+// NearbyPlayers returns player IDs within the given radius of the specified player,
+// excluding the player themselves. Returns nil if the player is not found.
+// Safe to call from any goroutine.
+func (r *Room) NearbyPlayers(pid player.PlayerID, radius float32) []player.PlayerID {
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+
+	pos, ok := r.spatial.Get(spatial.EntityID(pid))
+	if !ok {
+		return nil
+	}
+
+	ids := r.spatial.QueryRadius(pos, radius)
+	result := make([]player.PlayerID, 0, len(ids))
+	for _, id := range ids {
+		if id != spatial.EntityID(pid) {
+			result = append(result, player.PlayerID(id))
+		}
+	}
+	return result
+}
+
+// NearbyPlayersAt returns player IDs within the given radius of a world position.
+// Safe to call from any goroutine.
+func (r *Room) NearbyPlayersAt(pos player.Vector3, radius float32) []player.PlayerID {
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+
+	ids := r.spatial.QueryRadius(spatial.Pos(pos.X, pos.Z), radius)
+	result := make([]player.PlayerID, 0, len(ids))
+	for _, id := range ids {
+		result = append(result, player.PlayerID(id))
+	}
+	return result
 }

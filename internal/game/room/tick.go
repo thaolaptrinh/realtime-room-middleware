@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/player"
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/spatial"
 )
 
 // runTick is the room loop goroutine.
@@ -42,7 +43,6 @@ func (r *Room) runTick(ctx context.Context) {
 // Future milestones will extend this to:
 //   - update player state
 //   - update object state and release expired locks
-//   - update spatial hash
 //   - compute per-client interest sets
 //   - allocate voice/proximity groups
 //   - build and enqueue delta packets
@@ -98,6 +98,12 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 
 		r.sessionMu.Lock()
 		r.players[pid] = p
+		if err := r.spatial.Update(spatial.EntityID(pid), spatial.Pos(0, 0)); err != nil {
+			r.logger.Warn("room command: spatial update rejected on join",
+				slog.String("player_id", string(pid)),
+				slog.String("error", err.Error()),
+			)
+		}
 		r.sessionMu.Unlock()
 
 		r.logger.Debug("room command: join",
@@ -117,11 +123,11 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 		}
 		if ok {
 			r.playerCount.Add(-1)
-			// Mark player as leaving, then remove from players map.
 			if p, exists := r.players[player.PlayerID(cmd.PlayerID)]; exists {
 				p.MarkStatus(player.PlayerStatusLeaving)
 				delete(r.players, player.PlayerID(cmd.PlayerID))
 			}
+			r.spatial.Remove(spatial.EntityID(cmd.PlayerID))
 		}
 		r.sessionMu.Unlock()
 
@@ -141,11 +147,11 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 		}
 		if ok {
 			r.playerCount.Add(-1)
-			// Remove player state on disconnect.
 			if p, exists := r.players[player.PlayerID(att.playerID)]; exists {
 				p.MarkStatus(player.PlayerStatusGone)
 				delete(r.players, player.PlayerID(att.playerID))
 			}
+			r.spatial.Remove(spatial.EntityID(att.playerID))
 		}
 		r.sessionMu.Unlock()
 
@@ -154,8 +160,6 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 		)
 
 	case CmdPlayerInput:
-		// Validate and process player movement input.
-		// Payload must be player.PlayerInput.
 		input, ok := cmd.Payload.(player.PlayerInput)
 		if !ok {
 			r.logger.Warn("room command: CmdPlayerInput payload is not PlayerInput",
@@ -170,10 +174,18 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 			)
 			return
 		}
-		// Update player transform if player exists.
 		r.sessionMu.Lock()
 		if p, exists := r.players[player.PlayerID(cmd.PlayerID)]; exists {
 			p.UpdateTransform(input.Transform, tick)
+			if err := r.spatial.Update(
+				spatial.EntityID(cmd.PlayerID),
+				spatial.Pos(input.Transform.Position.X, input.Transform.Position.Z),
+			); err != nil {
+				r.logger.Warn("room command: spatial update rejected on player input",
+					slog.String("player_id", string(cmd.PlayerID)),
+					slog.String("error", err.Error()),
+				)
+			}
 		}
 		r.sessionMu.Unlock()
 
@@ -183,8 +195,6 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 		)
 
 	case CmdUpdatePlayerTransform:
-		// Internal command: directly update player transform (already validated).
-		// Payload must be player.PlayerTransform.
 		transform, ok := cmd.Payload.(player.PlayerTransform)
 		if !ok {
 			r.logger.Warn("room command: CmdUpdatePlayerTransform payload is not PlayerTransform",
@@ -195,6 +205,15 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 		r.sessionMu.Lock()
 		if p, exists := r.players[player.PlayerID(cmd.PlayerID)]; exists {
 			p.UpdateTransform(transform, tick)
+			if err := r.spatial.Update(
+				spatial.EntityID(cmd.PlayerID),
+				spatial.Pos(transform.Position.X, transform.Position.Z),
+			); err != nil {
+				r.logger.Warn("room command: spatial update rejected on transform",
+					slog.String("player_id", string(cmd.PlayerID)),
+					slog.String("error", err.Error()),
+				)
+			}
 		}
 		r.sessionMu.Unlock()
 
