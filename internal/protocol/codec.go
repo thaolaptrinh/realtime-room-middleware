@@ -6,6 +6,10 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+type validatable interface {
+	Validate() error
+}
+
 // encodeRaw marshals an envelope without validation, used only in tests.
 func encodeRaw(env *Envelope) ([]byte, error) {
 	return msgpack.Marshal(env)
@@ -15,6 +19,9 @@ func encodeRaw(env *Envelope) ([]byte, error) {
 // The caller should set Version, Type, Seq, Tick, and Body before calling.
 func EncodeEnvelope(env *Envelope) ([]byte, error) {
 	if err := ValidateVersion(env.Version); err != nil {
+		return nil, err
+	}
+	if err := ValidateMessageType(env.Type); err != nil {
 		return nil, err
 	}
 	if err := ValidatePayloadSize(env.Body); err != nil {
@@ -43,6 +50,9 @@ func DecodeEnvelope(data []byte) (*Envelope, error) {
 	if err := ValidateVersion(env.Version); err != nil {
 		return nil, err
 	}
+	if err := ValidateMessageType(env.Type); err != nil {
+		return nil, err
+	}
 	if err := ValidatePayloadSize(env.Body); err != nil {
 		return nil, err
 	}
@@ -52,6 +62,11 @@ func DecodeEnvelope(data []byte) (*Envelope, error) {
 // EncodeMessage serializes a message struct to MessagePack bytes
 // for use as an Envelope body.
 func EncodeMessage(msg interface{}) ([]byte, error) {
+	if v, ok := msg.(validatable); ok {
+		if err := v.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	data, err := msgpack.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("encode message: %w", err)
@@ -68,11 +83,22 @@ func DecodeMessage(body []byte, msg interface{}) error {
 	if err := msgpack.Unmarshal(body, msg); err != nil {
 		return fmt.Errorf("decode message: %w", err)
 	}
+	if v, ok := msg.(validatable); ok {
+		if err := v.Validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // BuildEnvelope creates a fully populated Envelope with the body encoded from msg.
 func BuildEnvelope(version uint16, msgType MessageType, seq uint32, tick uint32, msg interface{}) (*Envelope, error) {
+	if err := ValidateVersion(version); err != nil {
+		return nil, err
+	}
+	if err := ValidateMessageType(msgType); err != nil {
+		return nil, err
+	}
 	body, err := EncodeMessage(msg)
 	if err != nil {
 		return nil, err

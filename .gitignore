@@ -47,3 +47,9 @@ secrets.yaml
 # Logs
 *.log
 logs/
+
+# Local agent/runtime caches
+.opencode/node_modules/
+.opencode/.cache/
+.opencode/cache/
+node_modules/

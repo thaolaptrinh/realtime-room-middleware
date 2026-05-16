@@ -12,7 +12,7 @@ Phase 1 delta broadcast covers player position sync only.
 | Cluster-based interest (replaces radius query as primary path) | **Implemented (Stage 2 Task 9)** |
 | Position dirty tracking | Implemented |
 | Per-client snapshot cache | Implemented |
-| MessagePack encoding of PlayerDelta | Not yet implemented |
+| Protocol wire structs and MessagePack roundtrip for PlayerDelta | Implemented (Stage 2 Task 10) |
 | Transport send (KCP/WSS) of PlayerDelta | Not yet implemented |
 
 Deferred from Phase 1:
@@ -171,10 +171,12 @@ Not wired to interest management, snapshot cache, or transport send. Not a Phase
 Phase 1 items not yet implemented:
 
 ```txt
-- MessagePack encoding of PlayerDelta packets
+- Delta broadcaster integration that encodes PlayerDelta packets for transport
 - Transport send (KCP or WSS) of encoded PlayerDelta packets
 - FullSnapshot on join/reconnect (deferred — FullSnapshot is a separate message type)
 ```
+
+Protocol wire structs and codec roundtrip coverage for `PlayerDelta`, `PlayerEnterDelta`, `PlayerUpdateDelta`, `PlayerLeaveDelta`, and `FullSnapshot` were added in Stage 2 Task 10. Runtime send from the room loop remains intentionally unimplemented.
 
 ClusterAllocator and cluster-based delta building completed in Stage 2 Tasks 7-9:
 

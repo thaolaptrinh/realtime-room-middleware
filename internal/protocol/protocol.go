@@ -34,20 +34,24 @@ const (
 	TypeReconnect   MessageType = 3
 	TypePlayerInput MessageType = 4
 	TypePing        MessageType = 5
+	// TypePlayerTransformUpdate carries client-reported transform state for Phase 1 position sync.
+	TypePlayerTransformUpdate MessageType = 6
 
 	// Server → Client
-	TypeWelcome          MessageType = 1001
-	TypeJoinAccepted     MessageType = 1002
+	TypeWelcome           MessageType = 1001
+	TypeJoinAccepted      MessageType = 1002
 	TypeReconnectAccepted MessageType = 1003
 	TypeReconnectRejected MessageType = 1004
-	TypeFullSnapshot     MessageType = 1005
-	TypePlayerDelta      MessageType = 1006
-	TypeObjectDelta      MessageType = 1007
-	TypeVoiceGroupDelta  MessageType = 1008
-	TypeLockAccepted     MessageType = 1009
-	TypeLockRejected     MessageType = 1010
-	TypeError            MessageType = 1100
-	TypePong             MessageType = 1101
+	TypeFullSnapshot      MessageType = 1005
+	TypePlayerDelta       MessageType = 1006
+	TypeObjectDelta       MessageType = 1007
+	TypeVoiceGroupDelta   MessageType = 1008
+	TypeLockAccepted      MessageType = 1009
+	TypeLockRejected      MessageType = 1010
+	// TypeClusterMembershipDelta is reserved for optional Phase 1 diagnostics.
+	TypeClusterMembershipDelta MessageType = 1011
+	TypeError                  MessageType = 1100
+	TypePong                   MessageType = 1101
 )
 
 // IsClientToServer reports whether a message type originates from the client.
@@ -73,6 +77,8 @@ func (mt MessageType) String() string {
 		return "PlayerInput"
 	case TypePing:
 		return "Ping"
+	case TypePlayerTransformUpdate:
+		return "PlayerTransformUpdate"
 	case TypeWelcome:
 		return "Welcome"
 	case TypeJoinAccepted:
@@ -93,12 +99,62 @@ func (mt MessageType) String() string {
 		return "LockAccepted"
 	case TypeLockRejected:
 		return "LockRejected"
+	case TypeClusterMembershipDelta:
+		return "ClusterMembershipDelta"
 	case TypeError:
 		return "Error"
 	case TypePong:
 		return "Pong"
 	default:
 		return fmt.Sprintf("Unknown(%d)", mt)
+	}
+}
+
+// IsKnown reports whether a message type has a stable Protocol v1 ID.
+func (mt MessageType) IsKnown() bool {
+	switch mt {
+	case TypeHello,
+		TypeJoinRoom,
+		TypeReconnect,
+		TypePlayerInput,
+		TypePing,
+		TypePlayerTransformUpdate,
+		TypeWelcome,
+		TypeJoinAccepted,
+		TypeReconnectAccepted,
+		TypeReconnectRejected,
+		TypeFullSnapshot,
+		TypePlayerDelta,
+		TypeObjectDelta,
+		TypeVoiceGroupDelta,
+		TypeLockAccepted,
+		TypeLockRejected,
+		TypeClusterMembershipDelta,
+		TypeError,
+		TypePong:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsImplemented reports whether a message type has a Protocol v1 wire struct in this package.
+func (mt MessageType) IsImplemented() bool {
+	switch mt {
+	case TypeHello,
+		TypeJoinRoom,
+		TypePlayerInput,
+		TypePing,
+		TypePlayerTransformUpdate,
+		TypeWelcome,
+		TypeJoinAccepted,
+		TypeFullSnapshot,
+		TypePlayerDelta,
+		TypeError,
+		TypePong:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -137,6 +193,14 @@ func ValidateVersion(v uint16) error {
 	if v < MinVersion || v > MaxVersion {
 		return fmt.Errorf("unsupported protocol version %d: supported range is [%d, %d]",
 			v, MinVersion, MaxVersion)
+	}
+	return nil
+}
+
+// ValidateMessageType checks that a message type is implemented in Protocol v1.
+func ValidateMessageType(mt MessageType) error {
+	if !mt.IsImplemented() {
+		return fmt.Errorf("unimplemented or unknown message type %d", mt)
 	}
 	return nil
 }

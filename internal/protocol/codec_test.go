@@ -2,6 +2,12 @@ package protocol
 
 import (
 	"bytes"
+	"go/parser"
+	"go/token"
+	"math"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -128,8 +134,8 @@ func TestValidateVersionCurrent(t *testing.T) {
 
 func TestValidateVersionBounds(t *testing.T) {
 	cases := []struct {
-		v    uint16
-		ok   bool
+		v  uint16
+		ok bool
 	}{
 		{MinVersion - 1, false},
 		{MinVersion, true},
@@ -196,6 +202,12 @@ func TestMessageTypeDirection(t *testing.T) {
 	if !TypePing.IsClientToServer() {
 		t.Error("Ping should be client-to-server")
 	}
+	if !TypePlayerInput.IsClientToServer() {
+		t.Error("PlayerInput should be client-to-server")
+	}
+	if !TypePlayerTransformUpdate.IsClientToServer() {
+		t.Error("PlayerTransformUpdate should be client-to-server")
+	}
 	if TypeHello.IsServerToClient() {
 		t.Error("Hello should not be server-to-client")
 	}
@@ -206,8 +218,80 @@ func TestMessageTypeDirection(t *testing.T) {
 	if !TypePong.IsServerToClient() {
 		t.Error("Pong should be server-to-client")
 	}
+	if !TypeFullSnapshot.IsServerToClient() {
+		t.Error("FullSnapshot should be server-to-client")
+	}
+	if !TypePlayerDelta.IsServerToClient() {
+		t.Error("PlayerDelta should be server-to-client")
+	}
+	if !TypeClusterMembershipDelta.IsServerToClient() {
+		t.Error("ClusterMembershipDelta should be server-to-client")
+	}
 	if TypeWelcome.IsClientToServer() {
 		t.Error("Welcome should not be client-to-server")
+	}
+}
+
+func TestRejectInvalidMessageType(t *testing.T) {
+	msg := Ping{Timestamp: 1700000000}
+	_, err := EncodeAndWrap(CurrentVersion, MessageType(9999), 1, 0, &msg)
+	if err == nil {
+		t.Fatal("expected error for unknown message type")
+	}
+}
+
+func TestRejectDecodeInvalidMessageType(t *testing.T) {
+	env := &Envelope{
+		Version: CurrentVersion,
+		Type:    MessageType(9999),
+		Seq:     1,
+		Tick:    1,
+		Body:    []byte("x"),
+	}
+	data, err := encodeRawEnvelope(env)
+	if err != nil {
+		t.Fatalf("raw encode: %v", err)
+	}
+	_, err = DecodeEnvelope(data)
+	if err == nil {
+		t.Fatal("expected error for decoding unknown message type")
+	}
+}
+
+func TestRejectDeferredMessageTypes(t *testing.T) {
+	deferred := []MessageType{
+		TypeReconnect,
+		TypeReconnectAccepted,
+		TypeReconnectRejected,
+		TypeObjectDelta,
+		TypeVoiceGroupDelta,
+		TypeLockAccepted,
+		TypeLockRejected,
+		TypeClusterMembershipDelta,
+	}
+	for _, mt := range deferred {
+		if err := ValidateMessageType(mt); err == nil {
+			t.Fatalf("expected deferred message type %s to be rejected", mt)
+		}
+	}
+}
+
+func TestPhase1MessageTypeIDs(t *testing.T) {
+	cases := []struct {
+		name string
+		got  MessageType
+		want MessageType
+	}{
+		{name: "PlayerInput", got: TypePlayerInput, want: 4},
+		{name: "PlayerTransformUpdate", got: TypePlayerTransformUpdate, want: 6},
+		{name: "FullSnapshot", got: TypeFullSnapshot, want: 1005},
+		{name: "PlayerDelta", got: TypePlayerDelta, want: 1006},
+		{name: "ClusterMembershipDelta", got: TypeClusterMembershipDelta, want: 1011},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s type ID = %d, want %d", tc.name, tc.got, tc.want)
+		}
 	}
 }
 
@@ -218,9 +302,14 @@ func TestMessageTypeString(t *testing.T) {
 	}{
 		{TypeHello, "Hello"},
 		{TypeJoinRoom, "JoinRoom"},
+		{TypePlayerInput, "PlayerInput"},
 		{TypePing, "Ping"},
+		{TypePlayerTransformUpdate, "PlayerTransformUpdate"},
 		{TypeWelcome, "Welcome"},
 		{TypeJoinAccepted, "JoinAccepted"},
+		{TypeFullSnapshot, "FullSnapshot"},
+		{TypePlayerDelta, "PlayerDelta"},
+		{TypeClusterMembershipDelta, "ClusterMembershipDelta"},
 		{TypeError, "Error"},
 		{TypePong, "Pong"},
 		{MessageType(9999), "Unknown(9999)"},
@@ -230,6 +319,217 @@ func TestMessageTypeString(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("MessageType(%d).String() = %q, want %q", tc.mt, got, tc.want)
 		}
+	}
+}
+
+// --- Phase 1 position cluster sync messages ---
+
+func TestPlayerInputRoundtrip(t *testing.T) {
+	msg := PlayerInput{Seq: 101, MoveX: 0.25, MoveZ: -0.75, Yaw: 1.5, AnimState: 3}
+	body, err := EncodeMessage(&msg)
+	if err != nil {
+		t.Fatalf("EncodeMessage PlayerInput: %v", err)
+	}
+
+	var got PlayerInput
+	if err := DecodeMessage(body, &got); err != nil {
+		t.Fatalf("DecodeMessage PlayerInput: %v", err)
+	}
+	if got != msg {
+		t.Errorf("PlayerInput: got %+v, want %+v", got, msg)
+	}
+}
+
+func TestPlayerTransformUpdateRoundtrip(t *testing.T) {
+	msg := PlayerTransformUpdate{Seq: 102, X: 12.5, Z: -4.25, Yaw: 2.25, AnimState: 7}
+	body, err := EncodeMessage(&msg)
+	if err != nil {
+		t.Fatalf("EncodeMessage PlayerTransformUpdate: %v", err)
+	}
+
+	var got PlayerTransformUpdate
+	if err := DecodeMessage(body, &got); err != nil {
+		t.Fatalf("DecodeMessage PlayerTransformUpdate: %v", err)
+	}
+	if got != msg {
+		t.Errorf("PlayerTransformUpdate: got %+v, want %+v", got, msg)
+	}
+}
+
+func TestPlayerSnapshotRoundtrip(t *testing.T) {
+	msg := PlayerSnapshot{PlayerID: "player_42", X: 1.25, Z: 2.5, Yaw: 0.75, AnimState: 5, Version: 9}
+	body, err := EncodeMessage(&msg)
+	if err != nil {
+		t.Fatalf("EncodeMessage PlayerSnapshot: %v", err)
+	}
+
+	var got PlayerSnapshot
+	if err := DecodeMessage(body, &got); err != nil {
+		t.Fatalf("DecodeMessage PlayerSnapshot: %v", err)
+	}
+	if got != msg {
+		t.Errorf("PlayerSnapshot: got %+v, want %+v", got, msg)
+	}
+}
+
+func TestFullSnapshotRoundtrip(t *testing.T) {
+	msg := FullSnapshot{
+		Tick: 77,
+		Players: []PlayerSnapshot{
+			{PlayerID: "p1", X: 1, Z: 2, Yaw: 0.1, AnimState: 1, Version: 10},
+			{PlayerID: "p2", X: 3, Z: 4, Yaw: 0.2, AnimState: 2, Version: 11},
+		},
+	}
+	body, err := EncodeMessage(&msg)
+	if err != nil {
+		t.Fatalf("EncodeMessage FullSnapshot: %v", err)
+	}
+
+	var got FullSnapshot
+	if err := DecodeMessage(body, &got); err != nil {
+		t.Fatalf("DecodeMessage FullSnapshot: %v", err)
+	}
+	if got.Tick != msg.Tick || len(got.Players) != len(msg.Players) || got.Players[0] != msg.Players[0] || got.Players[1] != msg.Players[1] {
+		t.Errorf("FullSnapshot: got %+v, want %+v", got, msg)
+	}
+}
+
+func TestPlayerDeltaRoundtrip(t *testing.T) {
+	msg := PlayerDelta{
+		Tick: 88,
+		Enters: []PlayerEnterDelta{
+			{PlayerID: "p1", X: 1, Z: 2, Yaw: 0.1, AnimState: 1, Version: 10},
+		},
+		Updates: []PlayerUpdateDelta{
+			{PlayerID: "p2", X: 3, Z: 4, Yaw: 0.2, AnimState: 2, Version: 11},
+		},
+		Leaves: []PlayerLeaveDelta{
+			{PlayerID: "p3"},
+		},
+	}
+	body, err := EncodeMessage(&msg)
+	if err != nil {
+		t.Fatalf("EncodeMessage PlayerDelta: %v", err)
+	}
+
+	var got PlayerDelta
+	if err := DecodeMessage(body, &got); err != nil {
+		t.Fatalf("DecodeMessage PlayerDelta: %v", err)
+	}
+	if got.Tick != msg.Tick || got.Enters[0] != msg.Enters[0] || got.Updates[0] != msg.Updates[0] || got.Leaves[0] != msg.Leaves[0] {
+		t.Errorf("PlayerDelta: got %+v, want %+v", got, msg)
+	}
+}
+
+func TestPlayerEnterDeltaRoundtrip(t *testing.T) {
+	msg := PlayerEnterDelta{PlayerID: "p1", X: 1, Z: 2, Yaw: 0.1, AnimState: 1, Version: 10}
+	body, err := EncodeMessage(&msg)
+	if err != nil {
+		t.Fatalf("EncodeMessage PlayerEnterDelta: %v", err)
+	}
+
+	var got PlayerEnterDelta
+	if err := DecodeMessage(body, &got); err != nil {
+		t.Fatalf("DecodeMessage PlayerEnterDelta: %v", err)
+	}
+	if got != msg {
+		t.Errorf("PlayerEnterDelta: got %+v, want %+v", got, msg)
+	}
+}
+
+func TestPlayerUpdateDeltaRoundtrip(t *testing.T) {
+	msg := PlayerUpdateDelta{PlayerID: "p2", X: 3, Z: 4, Yaw: 0.2, AnimState: 2, Version: 11}
+	body, err := EncodeMessage(&msg)
+	if err != nil {
+		t.Fatalf("EncodeMessage PlayerUpdateDelta: %v", err)
+	}
+
+	var got PlayerUpdateDelta
+	if err := DecodeMessage(body, &got); err != nil {
+		t.Fatalf("DecodeMessage PlayerUpdateDelta: %v", err)
+	}
+	if got != msg {
+		t.Errorf("PlayerUpdateDelta: got %+v, want %+v", got, msg)
+	}
+}
+
+func TestPlayerLeaveDeltaRoundtrip(t *testing.T) {
+	msg := PlayerLeaveDelta{PlayerID: "p3"}
+	body, err := EncodeMessage(&msg)
+	if err != nil {
+		t.Fatalf("EncodeMessage PlayerLeaveDelta: %v", err)
+	}
+
+	var got PlayerLeaveDelta
+	if err := DecodeMessage(body, &got); err != nil {
+		t.Fatalf("DecodeMessage PlayerLeaveDelta: %v", err)
+	}
+	if got != msg {
+		t.Errorf("PlayerLeaveDelta: got %+v, want %+v", got, msg)
+	}
+}
+
+func TestRejectInvalidTransformValues(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  interface{}
+	}{
+		{name: "player input NaN", msg: &PlayerInput{Seq: 1, MoveX: float32(math.NaN()), MoveZ: 0, Yaw: 0}},
+		{name: "transform update Inf", msg: &PlayerTransformUpdate{Seq: 1, X: float32(math.Inf(1)), Z: 0, Yaw: 0}},
+		{name: "snapshot NaN", msg: &PlayerSnapshot{PlayerID: "p1", X: 0, Z: 0, Yaw: float32(math.NaN()), Version: 1}},
+		{name: "enter Inf", msg: &PlayerEnterDelta{PlayerID: "p1", X: 0, Z: float32(math.Inf(-1)), Yaw: 0, Version: 1}},
+		{name: "update NaN", msg: &PlayerUpdateDelta{PlayerID: "p1", X: 0, Z: 0, Yaw: float32(math.NaN()), Version: 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := EncodeMessage(tc.msg)
+			if err == nil {
+				t.Fatal("expected invalid transform value to be rejected")
+			}
+		})
+	}
+}
+
+func TestRejectInvalidTransformValuesForValueMessages(t *testing.T) {
+	_, err := EncodeMessage(PlayerTransformUpdate{Seq: 1, X: float32(math.NaN()), Z: 0, Yaw: 0})
+	if err == nil {
+		t.Fatal("expected value-form message validation to reject invalid transform")
+	}
+}
+
+func TestRejectMissingRequiredPlayerIDs(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  interface{}
+	}{
+		{name: "snapshot", msg: &PlayerSnapshot{X: 1, Z: 2, Yaw: 0, Version: 1}},
+		{name: "enter", msg: &PlayerEnterDelta{X: 1, Z: 2, Yaw: 0, Version: 1}},
+		{name: "update", msg: &PlayerUpdateDelta{X: 1, Z: 2, Yaw: 0, Version: 1}},
+		{name: "leave", msg: &PlayerLeaveDelta{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := EncodeMessage(tc.msg)
+			if err == nil {
+				t.Fatal("expected missing player ID to be rejected")
+			}
+		})
+	}
+}
+
+func TestPlayerDeltaIsEmpty(t *testing.T) {
+	if !((&PlayerDelta{}).IsEmpty()) {
+		t.Fatal("zero PlayerDelta should be empty")
+	}
+	if (&PlayerDelta{Updates: []PlayerUpdateDelta{{PlayerID: "p1", Version: 1}}}).IsEmpty() {
+		t.Fatal("PlayerDelta with an update should not be empty")
+	}
+}
+
+func TestRejectEmptyPlayerDelta(t *testing.T) {
+	_, err := EncodeMessage(&PlayerDelta{})
+	if err == nil {
+		t.Fatal("expected empty PlayerDelta to be rejected")
 	}
 }
 
@@ -518,6 +818,54 @@ func TestProtocolErrorCodes(t *testing.T) {
 			t.Errorf("duplicate error code %d", c)
 		}
 		seen[c] = true
+	}
+}
+
+func TestProtocolPackageDoesNotImportGamePackages(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("ReadDir protocol package: %v", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), entry.Name(), nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("ParseFile %s: %v", entry.Name(), err)
+		}
+		for _, imp := range file.Imports {
+			path := strings.Trim(imp.Path.Value, "\"")
+			if strings.Contains(path, "/internal/game") {
+				t.Fatalf("protocol package must not import game packages: %s imports %s", entry.Name(), path)
+			}
+		}
+	}
+}
+
+func TestProtocolPackageDoesNotUseJSONOrProtobuf(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("ReadDir protocol package: %v", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(".", entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", entry.Name(), err)
+		}
+		contents := string(data)
+		if strings.Contains(contents, "encoding/json") {
+			t.Fatalf("protocol package must not use JSON realtime codecs: %s", entry.Name())
+		}
+		if strings.Contains(contents, "protobuf") || strings.Contains(contents, "google.golang.org/protobuf") || strings.Contains(contents, ".proto") {
+			t.Fatalf("protocol package must not use protobuf realtime codecs: %s", entry.Name())
+		}
 	}
 }
 

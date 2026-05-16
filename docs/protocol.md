@@ -78,9 +78,9 @@ type Envelope struct {
 | Hello | 1 | `Hello` | 1 | Implemented |
 | JoinRoom | 2 | `JoinRoom` | 1 | Implemented |
 | Reconnect | 3 | — | Future | Reserved |
-| PlayerInput | 4 | `PlayerInput` | 1 | Reserved — Phase 1 |
+| PlayerInput | 4 | `PlayerInput` | 1 | Implemented — wire struct |
 | Ping | 5 | `Ping` | 1 | Implemented |
-| PlayerTransformUpdate | 6 | `PlayerTransformUpdate` | 1 | Reserved — Phase 1 |
+| PlayerTransformUpdate | 6 | `PlayerTransformUpdate` | 1 | Implemented — wire struct |
 | LeaveRoom | 7 | — | Future | Reserved |
 
 ### Server → Client (range 1000-1999)
@@ -91,8 +91,8 @@ type Envelope struct {
 | JoinAccepted | 1002 | `JoinAccepted` | 1 | Implemented |
 | ReconnectAccepted | 1003 | — | Future | Reserved |
 | ReconnectRejected | 1004 | — | Future | Reserved |
-| FullSnapshot | 1005 | `FullSnapshot` | 1 | Reserved — Phase 1 |
-| PlayerDelta | 1006 | `PlayerDelta` | 1 | Reserved — Phase 1 |
+| FullSnapshot | 1005 | `FullSnapshot` | 1 | Implemented — wire struct |
+| PlayerDelta | 1006 | `PlayerDelta` | 1 | Implemented — wire struct |
 | ObjectDelta | 1007 | — | Future | Reserved — Deferred |
 | VoiceGroupDelta | 1008 | — | Future | Reserved — Deferred |
 | LockAccepted | 1009 | — | Future | Reserved — Deferred |
@@ -196,9 +196,9 @@ type Pong struct {
 
 ---
 
-## Phase 1 Message Wire Formats (Reserved — Not Yet Implemented)
+## Phase 1 Message Wire Formats
 
-The following message types are reserved for Phase 1 implementation. Wire formats are specified here to lock the schema before coding begins. No wire-format change may occur after first Unity client integration without a protocol version bump.
+The following message types define the Phase 1 player position sync wire format. The MessagePack structs and validation live in `internal/protocol`; transport send is still implemented separately. No wire-format change may occur after first Unity client integration without a protocol version bump.
 
 ### PlayerInput (client → server, type 4)
 
@@ -289,7 +289,7 @@ Empty `PlayerDelta` (all slices nil/empty) must not be sent. The room skips enco
 
 Informs the client of its current cluster assignment. Optional in Phase 1; the client does not need cluster membership to render. Useful for debugging and future voice grouping pre-wiring.
 
-Reserved. Wire format TBD if implemented in Phase 1.
+Reserved. Wire format TBD if implemented in a future task.
 
 ---
 
@@ -352,15 +352,15 @@ Token validation on the game server is not yet implemented.
 
 ## Not Yet Implemented
 
-### Phase 1 — Reserved and Specified, Not Yet Coded
+### Phase 1 — Implemented Wire Structs, Not Yet Sent by Transport
 
-Wire formats are specified above. Implementation is the Phase 1 gameplay milestone.
+Wire formats are specified above and represented in `internal/protocol`. The delta broadcaster does not yet encode and send these messages through KCP or WSS.
 
 ```txt
-PlayerInput (4)              — spec above
-PlayerTransformUpdate (6)    — spec above
-FullSnapshot (1005)          — spec above
-PlayerDelta (1006)           — spec above
+PlayerInput (4)              — wire struct implemented
+PlayerTransformUpdate (6)    — wire struct implemented
+FullSnapshot (1005)          — wire struct implemented
+PlayerDelta (1006)           — wire struct implemented
 ClusterMembershipDelta (1011) — optional, wire format TBD
 ```
 
