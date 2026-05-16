@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/cluster"
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/delta"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/object"
 )
 
@@ -125,6 +126,13 @@ type ObjectCommandPayload struct {
 	ObjectID    object.ObjectID
 	Transform   *object.ObjectTransform // non-nil for CmdObjectUpdate transform changes
 	CustomState []byte                  // non-nil for CmdObjectUpdate custom state changes
+}
+
+// Broadcaster sends encoded delta batches to sessions.
+// The room loop calls BroadcastDelta after building per-session batches.
+// Implementations must not mutate room state.
+type Broadcaster interface {
+	BroadcastDelta(batches map[SessionID]*delta.DeltaBatch)
 }
 
 // RoomSpec is the input used to create a new room instance.

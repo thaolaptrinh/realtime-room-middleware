@@ -114,6 +114,10 @@ type Room struct {
 	// changes the actual player count. Triggers an early recompute.
 	clusterMembershipDirty bool
 
+	// broadcaster sends encoded delta batches to sessions.
+	// Set via SetBroadcaster before Start(). Nil means batches are discarded.
+	broadcaster Broadcaster
+
 	// cancel signals the tick loop to stop.
 	cancel context.CancelFunc
 	// done is closed by the tick loop goroutine when it exits.
@@ -468,4 +472,10 @@ func (r *Room) VisiblePlayersFor(pid player.PlayerID) []player.PlayerID {
 		result[i] = player.PlayerID(id)
 	}
 	return result
+}
+
+// SetBroadcaster sets the broadcaster used by the room loop to send delta batches.
+// Must be called before Start(). Not goroutine-safe.
+func (r *Room) SetBroadcaster(b Broadcaster) {
+	r.broadcaster = b
 }

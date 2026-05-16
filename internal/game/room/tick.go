@@ -163,14 +163,15 @@ func (r *Room) isBroadcastTick(tick uint32) bool {
 }
 
 // broadcast builds per-client delta batches and clears dirty state.
-// Transport send is a future milestone — batches are computed but not yet sent.
+// If a broadcaster is set, batches are dispatched to sessions.
 func (r *Room) broadcast(tick uint32) {
 	r.sessionMu.Lock()
 	batches := r.buildDeltaBatches(tick)
 	r.clearDirtyPlayers()
 	r.sessionMu.Unlock()
-	// batches are discarded until transport wiring is implemented.
-	_ = batches
+	if r.broadcaster != nil && len(batches) > 0 {
+		r.broadcaster.BroadcastDelta(batches)
+	}
 }
 
 // clearDirtyPlayers resets the dirty player set after a broadcast.
