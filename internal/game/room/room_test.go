@@ -1383,3 +1383,250 @@ func TestRoom_SpatialConfigCustomCellSize(t *testing.T) {
 	}
 	t.Error("custom cell size room should still index players")
 }
+
+// ---- Delta broadcast integration tests -------------------------------------
+
+func TestRoom_SnapshotCreatedOnJoin(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "snap-join-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	if r.SnapshotCacheLen() != 0 {
+		t.Errorf("SnapshotCacheLen before join = %d, want 0", r.SnapshotCacheLen())
+	}
+
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: "s1",
+		PlayerID:  "p1",
+		UserID:    "u1",
+		Timestamp: time.Now(),
+	})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.SnapshotCacheLen() == 1 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("SnapshotCacheLen after join = %d, want 1", r.SnapshotCacheLen())
+}
+
+func TestRoom_SnapshotRemovedOnLeave(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "snap-leave-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.SnapshotCacheLen() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r.SnapshotCacheLen() != 1 {
+		t.Fatalf("precondition: SnapshotCacheLen after join = %d, want 1", r.SnapshotCacheLen())
+	}
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdLeave, SessionID: "s1", PlayerID: "p1", Timestamp: time.Now()})
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.SnapshotCacheLen() == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("SnapshotCacheLen after leave = %d, want 0", r.SnapshotCacheLen())
+}
+
+func TestRoom_SnapshotRemovedOnDisconnect(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "snap-disconnect-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.SnapshotCacheLen() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r.SnapshotCacheLen() != 1 {
+		t.Fatalf("precondition: SnapshotCacheLen after join = %d, want 1", r.SnapshotCacheLen())
+	}
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdDisconnect, SessionID: "s1", Timestamp: time.Now()})
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.SnapshotCacheLen() == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("SnapshotCacheLen after disconnect = %d, want 0", r.SnapshotCacheLen())
+}
+
+func TestRoom_DirtyPlayerOnTransformUpdate(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "dirty-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r.PlayerCount() != 1 {
+		t.Fatal("precondition: player must be joined")
+	}
+
+	// Send a transform update; player should become dirty.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:     room.CmdPlayerInput,
+		PlayerID: "p1",
+		Payload: player.PlayerInput{
+			Seq: 1,
+			Transform: player.PlayerTransform{
+				Position: player.Vector3{X: 5, Y: 0, Z: 5},
+				Rotation: player.IdentityQuaternion,
+			},
+			Timestamp: time.Now().UnixMilli(),
+		},
+		Timestamp: time.Now(),
+	})
+
+	// Dirty count should increase then be cleared on the next broadcast tick.
+	// We just verify it becomes non-zero before being cleared.
+	deadline = time.Now().Add(500 * time.Millisecond)
+	gotDirty := false
+	for time.Now().Before(deadline) {
+		if r.DirtyPlayerCount() >= 1 {
+			gotDirty = true
+			break
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	// It is acceptable for the dirty count to have already been cleared by a
+	// broadcast tick. The important thing is no panic and correct transform.
+	if !gotDirty {
+		// Verify the transform was still applied even if dirty was cleared.
+		transform, version, ok := r.GetPlayerState("p1")
+		if !ok {
+			t.Fatal("player state should exist")
+		}
+		if version == 0 {
+			t.Error("player version should be > 0 after transform update, dirty tracking may be broken")
+		}
+		if transform.Position.X != 5 {
+			t.Errorf("Position.X = %.1f, want 5.0", transform.Position.X)
+		}
+	}
+}
+
+func TestRoom_MultipleSessionsSnapshotTracking(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "multi-snap-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s2", PlayerID: "p2", UserID: "u2", Timestamp: time.Now()})
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s3", PlayerID: "p3", UserID: "u3", Timestamp: time.Now()})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.SnapshotCacheLen() == 3 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r.SnapshotCacheLen() != 3 {
+		t.Errorf("SnapshotCacheLen after 3 joins = %d, want 3", r.SnapshotCacheLen())
+	}
+
+	// One leaves.
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdLeave, SessionID: "s2", PlayerID: "p2", Timestamp: time.Now()})
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.SnapshotCacheLen() == 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("SnapshotCacheLen after one leave = %d, want 2", r.SnapshotCacheLen())
+}
+
+func TestRoom_BroadcastDoesNotPanic(t *testing.T) {
+	// Ensure the broadcast loop runs without panicking under normal conditions.
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "broadcast-nopanic-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Two nearby players and one transform update — exercises full broadcast path.
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s2", PlayerID: "p2", UserID: "u2", Timestamp: time.Now()})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:     room.CmdPlayerInput,
+		PlayerID: "p1",
+		Payload: player.PlayerInput{
+			Seq: 1,
+			Transform: player.PlayerTransform{
+				Position: player.Vector3{X: 1, Y: 0, Z: 1},
+				Rotation: player.IdentityQuaternion,
+			},
+			Timestamp: time.Now().UnixMilli(),
+		},
+	})
+
+	// Let several broadcast ticks run.
+	time.Sleep(300 * time.Millisecond)
+
+	if r.Status() != room.RoomStatusRunning {
+		t.Errorf("room should still be running after broadcast ticks, got %s", r.Status())
+	}
+}

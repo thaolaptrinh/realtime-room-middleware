@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/delta"
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/interest"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/player"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/spatial"
 )
@@ -61,6 +63,22 @@ type Room struct {
 	// Only mutated by the room loop (inside handleCommand under sessionMu).
 	spatial *spatial.GridSpatialHash
 
+	// interestMgr computes per-client visible player sets from the spatial index.
+	// Read-only after construction; safe to use from the room loop.
+	interestMgr *interest.InterestManager
+
+	// snapshotCache holds per-session ClientSnapshot state for delta computation.
+	// Accessed only under sessionMu (read or write).
+	snapshotCache *delta.SnapshotCache
+
+	// deltaBuilder computes per-client PlayerDelta values.
+	// Stateless; shared across all broadcast calls.
+	deltaBuilder *delta.DeltaBuilder
+
+	// dirtyPlayers tracks players whose transforms were updated since the last
+	// broadcast. Accessed only under sessionMu (read or write).
+	dirtyPlayers map[player.PlayerID]struct{}
+
 	// cancel signals the tick loop to stop.
 	cancel context.CancelFunc
 	// done is closed by the tick loop goroutine when it exits.
@@ -69,16 +87,26 @@ type Room struct {
 
 // newRoom constructs a Room from a RoomSpec. Call Start to activate the tick loop.
 func newRoom(spec RoomSpec, logger *slog.Logger) *Room {
+	defaults := DefaultRoomConfig()
 	cfg := spec.Config
 	if cfg.TickRateHz <= 0 {
-		cfg.TickRateHz = DefaultRoomConfig().TickRateHz
+		cfg.TickRateHz = defaults.TickRateHz
+	}
+	if cfg.BroadcastRateHz <= 0 {
+		cfg.BroadcastRateHz = defaults.BroadcastRateHz
 	}
 	if cfg.CommandQueueSize <= 0 {
-		cfg.CommandQueueSize = DefaultRoomConfig().CommandQueueSize
+		cfg.CommandQueueSize = defaults.CommandQueueSize
 	}
 	if cfg.SpatialCellSizeM <= 0 {
-		cfg.SpatialCellSizeM = DefaultRoomConfig().SpatialCellSizeM
+		cfg.SpatialCellSizeM = defaults.SpatialCellSizeM
 	}
+	if cfg.InterestVisualRadiusM <= 0 {
+		cfg.InterestVisualRadiusM = defaults.InterestVisualRadiusM
+	}
+
+	interestCfg := interest.DefaultInterestConfig()
+	interestCfg.VisualRadiusM = cfg.InterestVisualRadiusM
 
 	return &Room{
 		instanceID:    spec.InstanceID,
@@ -94,6 +122,10 @@ func newRoom(spec RoomSpec, logger *slog.Logger) *Room {
 		userSessionIndex: make(map[UserID]SessionID),
 		players:          make(map[player.PlayerID]*player.PlayerState),
 		spatial:          spatial.NewGridSpatialHash(spatial.SpatialConfig{CellSizeM: cfg.SpatialCellSizeM}),
+		interestMgr:      interest.NewInterestManager(interestCfg),
+		snapshotCache:    delta.NewSnapshotCache(),
+		deltaBuilder:     delta.NewDeltaBuilder(),
+		dirtyPlayers:     make(map[player.PlayerID]struct{}),
 		done:             make(chan struct{}),
 	}
 }
@@ -224,4 +256,62 @@ func (r *Room) NearbyPlayersAt(pos player.Vector3, radius float32) []player.Play
 		result = append(result, player.PlayerID(id))
 	}
 	return result
+}
+
+// SnapshotCacheLen returns the number of per-session delta snapshots currently tracked.
+// Safe to call from any goroutine.
+func (r *Room) SnapshotCacheLen() int {
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+	return r.snapshotCache.Len()
+}
+
+// DirtyPlayerCount returns the number of players whose transforms are marked dirty
+// (updated since the last broadcast tick).
+// Safe to call from any goroutine.
+func (r *Room) DirtyPlayerCount() int {
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+	return len(r.dirtyPlayers)
+}
+
+// buildDeltaBatches computes a per-session DeltaBatch for all active sessions.
+//
+// Called by broadcast(). Must be called with sessionMu held (write lock) since it
+// reads activeSessions, players, spatial, and mutates snapshotCache.
+func (r *Room) buildDeltaBatches(tick uint32) map[SessionID]*delta.DeltaBatch {
+	if len(r.activeSessions) == 0 {
+		return nil
+	}
+
+	batches := make(map[SessionID]*delta.DeltaBatch, len(r.activeSessions))
+
+	for sessionID, att := range r.activeSessions {
+		pid := player.PlayerID(att.playerID)
+
+		ps, ok := r.players[pid]
+		if !ok {
+			continue
+		}
+
+		transform, _ := ps.Snapshot()
+		viewerPos := spatial.Pos(transform.Position.X, transform.Position.Z)
+
+		interestSet := r.interestMgr.QueryVisiblePlayers(r.spatial, viewerPos, spatial.EntityID(pid))
+
+		visiblePlayers := make([]player.PlayerID, len(interestSet.VisiblePlayers))
+		for i, id := range interestSet.VisiblePlayers {
+			visiblePlayers[i] = player.PlayerID(id)
+		}
+
+		snapshot := r.snapshotCache.GetOrCreate(string(sessionID))
+		playerDelta := r.deltaBuilder.BuildPlayerDelta(tick, visiblePlayers, snapshot, r.players)
+
+		batches[sessionID] = &delta.DeltaBatch{
+			Tick:        tick,
+			PlayerDelta: playerDelta,
+		}
+	}
+
+	return batches
 }

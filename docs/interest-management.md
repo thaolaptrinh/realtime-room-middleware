@@ -78,10 +78,23 @@ All radius values are independently configurable even though they default to 30m
 - Interest management must be deterministic and testable.
 - K-Means must not be the only source of truth for visibility.
 
+## Delta Integration (implemented in Stage 2 Task 5)
+
+The interest manager is now called inside `buildDeltaBatches` in the room broadcast path:
+
+```
+broadcast(tick) [holds sessionMu.Lock]
+  → for each active session:
+      interestMgr.QueryVisiblePlayers(r.spatial, viewerPos, viewerID)
+      → DeltaBuilder.BuildPlayerDelta(tick, visiblePlayers, snapshot, playerStates)
+```
+
+See `docs/delta-broadcast.md` for the full delta broadcast design.
+
 ## Future (not yet implemented)
 
-- Object entity tracking in spatial index
-- LOD/blue-avatar distance thresholds
-- Voice candidate queries
-- Per-client snapshot caches and delta computation
+- Object entity tracking in spatial index (EntityObject)
+- LOD/blue-avatar distance thresholds in InterestManager
+- Voice candidate radius queries
 - Object culling outside object radius
+- Per-client bandwidth accounting

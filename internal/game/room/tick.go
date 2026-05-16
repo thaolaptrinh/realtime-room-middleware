@@ -38,17 +38,51 @@ func (r *Room) runTick(ctx context.Context) {
 
 // tick executes one simulation step.
 //
-// Current implementation: increments tick counter, drains and dispatches the command queue.
-//
-// Future milestones will extend this to:
-//   - update player state
-//   - update object state and release expired locks
-//   - compute per-client interest sets
-//   - allocate voice/proximity groups
-//   - build and enqueue delta packets
+// Each tick: drains the command queue, then broadcasts deltas at the configured
+// broadcast rate (default 10 Hz). Future milestones will add object lock expiry,
+// voice group allocation, and packet encoding/sending.
 func (r *Room) tick() {
 	tick := r.currentTick.Add(1)
 	r.drainCommands(tick)
+	if r.isBroadcastTick(tick) {
+		r.broadcast(tick)
+	}
+}
+
+// isBroadcastTick returns true if a broadcast should occur on the given tick number.
+// Broadcast fires every TickRateHz/BroadcastRateHz ticks (e.g., every 2nd tick when
+// TickRateHz=20 and BroadcastRateHz=10).
+func (r *Room) isBroadcastTick(tick uint32) bool {
+	if r.config.BroadcastRateHz <= 0 || r.config.TickRateHz <= 0 {
+		return false
+	}
+	if r.config.BroadcastRateHz >= r.config.TickRateHz {
+		return true
+	}
+	ratio := uint32(r.config.TickRateHz / r.config.BroadcastRateHz)
+	if ratio == 0 {
+		return true
+	}
+	return tick%ratio == 0
+}
+
+// broadcast builds per-client delta batches and clears dirty state.
+// Transport send is a future milestone — batches are computed but not yet sent.
+func (r *Room) broadcast(tick uint32) {
+	r.sessionMu.Lock()
+	batches := r.buildDeltaBatches(tick)
+	r.clearDirtyPlayers()
+	r.sessionMu.Unlock()
+	// batches are discarded until transport wiring is implemented.
+	_ = batches
+}
+
+// clearDirtyPlayers resets the dirty player set after a broadcast.
+// Must be called with sessionMu held.
+func (r *Room) clearDirtyPlayers() {
+	for pid := range r.dirtyPlayers {
+		delete(r.dirtyPlayers, pid)
+	}
 }
 
 // drainCommands processes all queued commands without blocking.
@@ -104,6 +138,7 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 				slog.String("error", err.Error()),
 			)
 		}
+		r.snapshotCache.GetOrCreate(string(cmd.SessionID))
 		r.sessionMu.Unlock()
 
 		r.logger.Debug("room command: join",
@@ -128,6 +163,8 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 				delete(r.players, player.PlayerID(cmd.PlayerID))
 			}
 			r.spatial.Remove(spatial.EntityID(cmd.PlayerID))
+			r.snapshotCache.Remove(string(cmd.SessionID))
+			delete(r.dirtyPlayers, player.PlayerID(cmd.PlayerID))
 		}
 		r.sessionMu.Unlock()
 
@@ -152,6 +189,8 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 				delete(r.players, player.PlayerID(att.playerID))
 			}
 			r.spatial.Remove(spatial.EntityID(att.playerID))
+			r.snapshotCache.Remove(string(cmd.SessionID))
+			delete(r.dirtyPlayers, player.PlayerID(att.playerID))
 		}
 		r.sessionMu.Unlock()
 
@@ -186,6 +225,7 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 					slog.String("error", err.Error()),
 				)
 			}
+			r.dirtyPlayers[player.PlayerID(cmd.PlayerID)] = struct{}{}
 		}
 		r.sessionMu.Unlock()
 
@@ -214,6 +254,7 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 					slog.String("error", err.Error()),
 				)
 			}
+			r.dirtyPlayers[player.PlayerID(cmd.PlayerID)] = struct{}{}
 		}
 		r.sessionMu.Unlock()
 
