@@ -104,7 +104,7 @@ parallel transports sharing one application protocol.
 | Network protocol      | KCP over UDP            | WSS/WebSocket over TCP    |
 | Application protocol  | MessagePack Protocol v1 | MessagePack Protocol v1   |
 | Listener port         | `:9000` (UDP)           | `:9001` (TCP, TLS)        |
-| Status                | Skeleton implemented    | Reserved — spec only      |
+| Status                | Skeleton implemented    | Skeleton implemented      |
 
 Both transports normalize sessions to the same `RealtimeSession` interface.
 The room loop is transport-agnostic.

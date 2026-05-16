@@ -3,6 +3,7 @@ module github.com/thaonguyen/realtime-room-middleware
 go 1.23
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	github.com/xtaci/kcp-go v5.3.9+incompatible
 	gopkg.in/yaml.v3 v3.0.1

@@ -30,10 +30,10 @@ The HTTP/JSON Gateway remains the control plane for all clients. JSON is not use
 
 ## Client Platform Support
 
-| Platform        | Transport         | Status      |
-|-----------------|-------------------|-------------|
-| Unity native    | KCP/UDP           | Implemented |
-| Unity WebGL     | WSS/WebSocket     | Reserved    |
+| Platform        | Transport         | Status                   |
+|-----------------|-------------------|--------------------------|
+| Unity native    | KCP/UDP           | Implemented (skeleton)   |
+| Unity WebGL     | WSS/WebSocket     | Implemented (skeleton)   |
 
 ## Transport Matrix
 

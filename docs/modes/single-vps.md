@@ -30,10 +30,11 @@
 - Dual transport join contract (KCP + WebSocket endpoint assignment): implemented
 - SingleNodeResolver: implemented
 - Session token placeholder: implemented
+- KCP transport skeleton: implemented
+- WebSocket transport skeleton: implemented (Stage 1 Task 4)
 - Room runtime: not yet implemented
 - Object locking: not yet implemented
-- WebSocket server: not yet implemented
-- Production auth: not yet implemented
+- Production auth (token validation): not yet implemented
 - Load testing: not yet done
 
 ## What Is Not Included

@@ -11,6 +11,7 @@ import (
 
 	"github.com/thaonguyen/realtime-room-middleware/internal/config"
 	kcptransport "github.com/thaonguyen/realtime-room-middleware/internal/transport/kcp"
+	wsstransport "github.com/thaonguyen/realtime-room-middleware/internal/transport/websocket"
 )
 
 func main() {
@@ -60,16 +61,57 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Start the WebSocket server when configured (Unity WebGL transport).
+	// WSS is required for all production endpoints. In dev mode, unencrypted WS is
+	// permitted when TLSCertFile/TLSKeyFile are not set.
+	var wssServer *wsstransport.WSSServer
+	if cfg.Game.WebSocketAddr != "" {
+		wssHandler := wsstransport.HandlerFunc(func(sess wsstransport.Session, data []byte) {
+			logger.Debug("websocket packet received",
+				slog.String("session_id", sess.ID()),
+				slog.Int("bytes", len(data)),
+			)
+		})
+
+		isDevMode := cfg.Deployment.Mode == config.ModeDev
+
+		var err error
+		wssServer, err = wsstransport.NewServer(wsstransport.ServerConfig{
+			ListenAddr: cfg.Game.WebSocketAddr,
+			DevMode:    isDevMode,
+			Logger:     logger,
+		}, wssHandler)
+		if err != nil {
+			logger.Error("websocket server init failed", slog.String("err", err.Error()))
+			os.Exit(1)
+		}
+
+		if err := wssServer.Start(ctx); err != nil {
+			logger.Error("websocket server start failed", slog.String("err", err.Error()))
+			os.Exit(1)
+		}
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Info("game-server ready",
-		slog.String("kcp_addr", kcpServer.Addr().String()),
-	)
+	if wssServer != nil {
+		logger.Info("game-server ready",
+			slog.String("kcp_addr", kcpServer.Addr().String()),
+			slog.String("websocket_addr", wssServer.Addr().String()),
+		)
+	} else {
+		logger.Info("game-server ready",
+			slog.String("kcp_addr", kcpServer.Addr().String()),
+		)
+	}
 
 	<-sigCh
 	logger.Info("game-server shutting down")
 	kcpServer.Stop()
+	if wssServer != nil {
+		wssServer.Stop()
+	}
 	logger.Info("game-server stopped")
 }
 

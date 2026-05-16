@@ -266,16 +266,28 @@ Slow WebSocket clients must never:
 
 ---
 
-## 16. Not Yet Implemented
+## 16. Implementation Status (Stage 1 Task 4)
 
-- WebSocket server implementation.
+Implemented (skeleton):
+
+- `internal/transport/websocket/handler.go` — `Session` interface, `PacketHandler`, `HandlerFunc`
+- `internal/transport/websocket/server.go` — `ServerConfig`, `WSSServer`, lifecycle (Start/Stop)
+- `internal/transport/websocket/session.go` — `wssSession` read/write loops, binary frame enforcement
+- `internal/transport/websocket/server_test.go` — config validation, lifecycle, binary/text frame, goroutine cleanup
+- `cmd/game-server/main.go` — optional WebSocket server wiring alongside KCP
+- `go.mod` — `github.com/gorilla/websocket v1.5.3` added as direct dependency
+
+Not yet implemented:
+
 - Unity WebGL client implementation.
 - Room runtime integration (WebSocket session ↔ room loop wiring).
+- Session token validation (deferred with KCP — same milestone).
 - WebRTC or WebTransport.
 - Protobuf Protocol v2.
 - Snapshot chunking for large payloads.
-- Metrics integration.
+- Metrics integration (send queue depth, bytes sent/received).
 - Concurrent session stress test.
+- TLS direct termination (production uses reverse proxy; `TLSCertFile`/`TLSKeyFile` fields are in `ServerConfig` for future use).
 
 ---
 
@@ -290,7 +302,7 @@ Slow WebSocket clients must never:
 | Message types                   | Identical                  | Identical                 |
 | Session abstraction             | `RealtimeSession`          | `RealtimeSession`         |
 | Room loop visibility            | Transport-agnostic         | Transport-agnostic        |
-| Status                          | Implemented (skeleton)     | Reserved — spec only      |
+| Status                          | Implemented (skeleton)     | Implemented (skeleton)    |
 
 Both transports are required. Neither replaces the other. Native and WebGL
 clients may coexist in the same room instance after room runtime integration.
