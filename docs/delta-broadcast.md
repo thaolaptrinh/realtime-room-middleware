@@ -170,9 +170,18 @@ Phase 1 items not yet implemented:
 - MessagePack encoding of PlayerDelta packets
 - Transport send (KCP or WSS) of encoded PlayerDelta packets
 - FullSnapshot on join/reconnect (deferred — FullSnapshot is a separate message type)
-- Cluster-based interest set wired into buildDeltaBatches (spec complete, not coded)
+- Cluster-based interest set wired into buildDeltaBatches (skeleton done; room integration pending)
 - ClusterConfig in RoomConfig
 - ClusterAllocator called from room tick
+```
+
+ClusterAllocator skeleton completed in Stage 2 Task 7:
+
+```txt
+internal/game/cluster/types.go      — ClusterID, ClusterInput, ClusterPlayer, ClusterOutput, ClusterConfig
+internal/game/cluster/allocator.go  — ClusterAllocator interface
+internal/game/cluster/kmeans.go     — KMeansClusterAllocator
+internal/game/cluster/kmeans_test.go — unit tests
 ```
 
 ## Deferred / Future Scope

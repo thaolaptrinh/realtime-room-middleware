@@ -1,6 +1,6 @@
 # Spec: K-Means Position Cluster Sync
 
-## Status: Specification only — not yet implemented
+## Status: Skeleton implemented (Stage 2 Task 7) — room integration pending
 
 ---
 
@@ -373,18 +373,26 @@ Cross-cluster visibility (transitional zone):
 
 ---
 
-## What Is Intentionally Not Implemented Yet
+## Implementation Status (Stage 2 Task 7)
 
-At the time of this spec:
+The cluster allocator skeleton is implemented:
 
-- `ClusterAllocator` interface does not exist in code.
-- `KMeansClusterAllocator` does not exist in code.
-- The room loop does not call any cluster allocator.
-- The broadcast path still uses `InterestManager.QueryVisiblePlayers` (radius query).
-- `ClusterConfig` is not in `RoomConfig`.
-- No cluster metrics are emitted.
+- `ClusterAllocator` interface — `internal/game/cluster/allocator.go`
+- `KMeansClusterAllocator` — `internal/game/cluster/kmeans.go`
+- Domain types and config — `internal/game/cluster/types.go`
+- Unit tests — `internal/game/cluster/kmeans_test.go`
 
-Implementation begins when this spec is approved and the next prompt explicitly starts it.
+Not yet implemented (intentionally deferred to next tasks):
+
+- `ClusterConfig` is not in `RoomConfig` — room integration is the next task.
+- The room loop does not call `ClusterAllocator.Compute` — deferred to room integration.
+- The broadcast path still uses `InterestManager.QueryVisiblePlayers` (radius query) — deferred.
+- No cluster metrics are emitted — deferred.
+
+Hysteresis skeleton note: centroids in the output reflect K-Means convergence, not
+post-hysteresis membership. The prevCentroid used in the next recompute is the K-Means
+centroid, which may drift slightly from the actual hysteresis-adjusted cluster position.
+A future optimisation may recompute centroids after the hysteresis pass.
 
 ---
 
