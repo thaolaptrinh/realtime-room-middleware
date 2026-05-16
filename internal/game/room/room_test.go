@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/object"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/player"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/room"
 )
@@ -1628,5 +1629,339 @@ func TestRoom_BroadcastDoesNotPanic(t *testing.T) {
 
 	if r.Status() != room.RoomStatusRunning {
 		t.Errorf("room should still be running after broadcast ticks, got %s", r.Status())
+	}
+}
+
+// ---- Object command integration tests ----------------------------------------
+
+func TestRoom_ObjectLockAcquire_ThroughRoom(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "obj-lock-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Register an object before sending lock commands.
+	if err := r.CreateObject("chair-1", "chair", object.ObjectTransform{}); err != nil {
+		t.Fatalf("CreateObject: %v", err)
+	}
+	if r.ObjectCount() != 1 {
+		t.Fatalf("ObjectCount after CreateObject = %d, want 1", r.ObjectCount())
+	}
+
+	// Join a session.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: "sess-alice",
+		PlayerID:  "p-alice",
+		UserID:    "alice",
+		Timestamp: time.Now(),
+	})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.HasSession("sess-alice") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !r.HasSession("sess-alice") {
+		t.Fatal("precondition: alice session not attached")
+	}
+
+	// Send lock acquire command.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdObjectLockAcquire,
+		SessionID: "sess-alice",
+		UserID:    "alice",
+		Payload:   room.ObjectCommandPayload{ObjectID: "chair-1"},
+		Timestamp: time.Now(),
+	})
+
+	// Wait for lock to be granted.
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.UserLockCount("alice") == 1 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("UserLockCount after acquire = %d, want 1", r.UserLockCount("alice"))
+}
+
+func TestRoom_ObjectLockRelease_ThroughRoom(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "obj-release-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	if err := r.CreateObject("chair-1", "chair", object.ObjectTransform{}); err != nil {
+		t.Fatalf("CreateObject: %v", err)
+	}
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "alice", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.HasSession("s1") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Acquire.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdObjectLockAcquire,
+		SessionID: "s1",
+		UserID:    "alice",
+		Payload:   room.ObjectCommandPayload{ObjectID: "chair-1"},
+		Timestamp: time.Now(),
+	})
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.UserLockCount("alice") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r.UserLockCount("alice") != 1 {
+		t.Fatal("precondition: alice must hold the lock")
+	}
+
+	// Release.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdObjectLockRelease,
+		SessionID: "s1",
+		UserID:    "alice",
+		Payload:   room.ObjectCommandPayload{ObjectID: "chair-1"},
+		Timestamp: time.Now(),
+	})
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.UserLockCount("alice") == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("UserLockCount after release = %d, want 0", r.UserLockCount("alice"))
+}
+
+func TestRoom_ObjectLockAcquire_RejectSecondUser(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "obj-contention-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	if err := r.CreateObject("chair-1", "chair", object.ObjectTransform{}); err != nil {
+		t.Fatalf("CreateObject: %v", err)
+	}
+
+	// Two sessions join.
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s-alice", PlayerID: "p1", UserID: "alice", Timestamp: time.Now()})
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s-bob", PlayerID: "p2", UserID: "bob", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.PlayerCount() == 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Alice acquires the lock.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdObjectLockAcquire,
+		SessionID: "s-alice",
+		UserID:    "alice",
+		Payload:   room.ObjectCommandPayload{ObjectID: "chair-1"},
+		Timestamp: time.Now(),
+	})
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.UserLockCount("alice") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r.UserLockCount("alice") != 1 {
+		t.Fatal("precondition: alice must hold the lock")
+	}
+
+	// Bob tries to acquire — must be rejected.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdObjectLockAcquire,
+		SessionID: "s-bob",
+		UserID:    "bob",
+		Payload:   room.ObjectCommandPayload{ObjectID: "chair-1"},
+		Timestamp: time.Now(),
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	if r.UserLockCount("bob") != 0 {
+		t.Errorf("UserLockCount(bob) = %d, want 0 (lock owned by alice)", r.UserLockCount("bob"))
+	}
+	if r.UserLockCount("alice") != 1 {
+		t.Errorf("UserLockCount(alice) = %d, want 1 (lock should still be held)", r.UserLockCount("alice"))
+	}
+}
+
+func TestRoom_DisconnectReleasesObjectLocks(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "obj-disconnect-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	if err := r.CreateObject("chair-1", "chair", object.ObjectTransform{}); err != nil {
+		t.Fatalf("CreateObject: %v", err)
+	}
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "alice", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.HasSession("s1") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Alice acquires a lock.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdObjectLockAcquire,
+		SessionID: "s1",
+		UserID:    "alice",
+		Payload:   room.ObjectCommandPayload{ObjectID: "chair-1"},
+		Timestamp: time.Now(),
+	})
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.UserLockCount("alice") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r.UserLockCount("alice") != 1 {
+		t.Fatal("precondition: alice must hold the lock")
+	}
+
+	// Alice disconnects — lock must be released.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdDisconnect,
+		SessionID: "s1",
+		Timestamp: time.Now(),
+	})
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.UserLockCount("alice") == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("UserLockCount(alice) after disconnect = %d, want 0", r.UserLockCount("alice"))
+}
+
+func TestRoom_ObjectLockRefresh_ThroughRoom(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "obj-refresh-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	if err := r.CreateObject("chair-1", "chair", object.ObjectTransform{}); err != nil {
+		t.Fatalf("CreateObject: %v", err)
+	}
+
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "s1", PlayerID: "p1", UserID: "alice", Timestamp: time.Now()})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.HasSession("s1") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Acquire.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdObjectLockAcquire,
+		SessionID: "s1",
+		UserID:    "alice",
+		Payload:   room.ObjectCommandPayload{ObjectID: "chair-1"},
+		Timestamp: time.Now(),
+	})
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.UserLockCount("alice") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r.UserLockCount("alice") != 1 {
+		t.Fatal("precondition: alice must hold the lock")
+	}
+
+	// Refresh must succeed and not panic.
+	if err := r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdObjectLockRefresh,
+		SessionID: "s1",
+		UserID:    "alice",
+		Payload:   room.ObjectCommandPayload{ObjectID: "chair-1"},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Enqueue refresh: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Alice should still hold the lock after refresh.
+	if r.UserLockCount("alice") != 1 {
+		t.Errorf("UserLockCount after refresh = %d, want 1", r.UserLockCount("alice"))
+	}
+}
+
+func TestRoom_ObjectUpdate_ThroughRoom(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "obj-update-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	if err := r.CreateObject("table-1", "table", object.ObjectTransform{}); err != nil {
+		t.Fatalf("CreateObject: %v", err)
+	}
+
+	newTransform := object.ObjectTransform{Position: object.Vec3{X: 5, Y: 0, Z: 3}, Rotation: object.IdentityQuat}
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdObjectUpdate,
+		SessionID: "srv",
+		Payload: room.ObjectCommandPayload{
+			ObjectID:  "table-1",
+			Transform: &newTransform,
+		},
+		Timestamp: time.Now(),
+	})
+
+	// Just verify the room does not panic and stays running.
+	time.Sleep(100 * time.Millisecond)
+	if r.Status() != room.RoomStatusRunning {
+		t.Errorf("room status = %s, want running", r.Status())
 	}
 }

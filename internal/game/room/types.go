@@ -1,6 +1,10 @@
 package room
 
-import "time"
+import (
+	"time"
+
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/object"
+)
 
 // LogicalRoomID is the product-facing room identifier (e.g., "expo-room-a").
 // Multiple physical instances may share one logical ID.
@@ -55,12 +59,13 @@ func (s RoomStatus) String() string {
 
 // RoomConfig holds per-room configuration.
 type RoomConfig struct {
-	MaxPlayers            int     // Maximum concurrent players allowed.
-	TickRateHz            int     // Room simulation frequency (default 20).
-	BroadcastRateHz       int     // Delta broadcast frequency (default 10).
-	CommandQueueSize      int     // Buffered command channel depth (default 256).
-	SpatialCellSizeM      float32 // Spatial hash cell size in meters (default 10).
-	InterestVisualRadiusM float32 // Visual interest radius in meters (default 30).
+	MaxPlayers            int              // Maximum concurrent players allowed.
+	TickRateHz            int              // Room simulation frequency (default 20).
+	BroadcastRateHz       int              // Delta broadcast frequency (default 10).
+	CommandQueueSize      int              // Buffered command channel depth (default 256).
+	SpatialCellSizeM      float32          // Spatial hash cell size in meters (default 10).
+	InterestVisualRadiusM float32          // Visual interest radius in meters (default 30).
+	ObjectLockLease       object.LockLease // Object lock TTL and per-user lock limit.
 }
 
 // DefaultRoomConfig returns a RoomConfig with production-default values.
@@ -72,6 +77,7 @@ func DefaultRoomConfig() RoomConfig {
 		CommandQueueSize:      256,
 		SpatialCellSizeM:      10.0,
 		InterestVisualRadiusM: 30.0,
+		ObjectLockLease:       object.DefaultLockLease(),
 	}
 }
 
@@ -84,7 +90,10 @@ const (
 	CmdDisconnect                                       // Transport session disconnected unexpectedly.
 	CmdPlayerInput                                      // Player movement/transform input from client.
 	CmdUpdatePlayerTransform                            // Internal: update player transform (validated).
-	// Future: CmdObjectCommand, CmdObjectLock, etc.
+	CmdObjectLockAcquire                                // Client requests a lock on an object.
+	CmdObjectLockRefresh                                // Client refreshes their existing lock TTL.
+	CmdObjectLockRelease                                // Client explicitly releases their lock.
+	CmdObjectUpdate                                     // Server-authoritative object state update.
 )
 
 // RoomCommand is an envelope for commands enqueued by transport goroutines.
@@ -96,9 +105,23 @@ type RoomCommand struct {
 	PlayerID  PlayerID
 	// UserID is the authenticated user identity. Set on CmdJoin for duplicate detection.
 	UserID UserID
-	// Payload holds kind-specific data; typed per command kind in future milestones.
+	// Payload holds kind-specific data:
+	//   CmdPlayerInput           → player.PlayerInput
+	//   CmdUpdatePlayerTransform → player.PlayerTransform
+	//   CmdObjectLockAcquire     → ObjectCommandPayload
+	//   CmdObjectLockRefresh     → ObjectCommandPayload
+	//   CmdObjectLockRelease     → ObjectCommandPayload
+	//   CmdObjectUpdate          → ObjectCommandPayload
 	Payload   any
 	Timestamp time.Time
+}
+
+// ObjectCommandPayload carries object command data in RoomCommand.Payload.
+// UserID and SessionID identify the requesting player; ObjectID targets the object.
+type ObjectCommandPayload struct {
+	ObjectID    object.ObjectID
+	Transform   *object.ObjectTransform // non-nil for CmdObjectUpdate transform changes
+	CustomState []byte                  // non-nil for CmdObjectUpdate custom state changes
 }
 
 // RoomSpec is the input used to create a new room instance.

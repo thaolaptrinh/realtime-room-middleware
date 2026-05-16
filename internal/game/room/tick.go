@@ -38,14 +38,29 @@ func (r *Room) runTick(ctx context.Context) {
 
 // tick executes one simulation step.
 //
-// Each tick: drains the command queue, then broadcasts deltas at the configured
-// broadcast rate (default 10 Hz). Future milestones will add object lock expiry,
-// voice group allocation, and packet encoding/sending.
+// Order per tick:
+//  1. Expire stale object locks (before command drain so AcquireLock sees clean state).
+//  2. Drain the command queue.
+//  3. Broadcast deltas at the configured broadcast rate (default 10 Hz).
 func (r *Room) tick() {
 	tick := r.currentTick.Add(1)
+	r.releaseExpiredLocks()
 	r.drainCommands(tick)
 	if r.isBroadcastTick(tick) {
 		r.broadcast(tick)
+	}
+}
+
+// releaseExpiredLocks clears any object locks whose TTL has elapsed.
+// Called at the start of each tick, before command processing.
+// Holds sessionMu so external readers (ObjectCount, UserLockCount) see consistent state.
+func (r *Room) releaseExpiredLocks() {
+	now := time.Now()
+	r.sessionMu.Lock()
+	released := r.lockMgr.ReleaseExpired(now)
+	r.sessionMu.Unlock()
+	for _, id := range released {
+		r.logger.Debug("room: object lock expired", slog.String("object_id", string(id)))
 	}
 }
 
@@ -168,6 +183,17 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 		}
 		r.sessionMu.Unlock()
 
+		// Release any object locks held by this session.
+		r.sessionMu.Lock()
+		releasedLocks := r.lockMgr.ReleaseBySession(string(cmd.SessionID), time.Now())
+		r.sessionMu.Unlock()
+		for _, id := range releasedLocks {
+			r.logger.Debug("room command: lock released on leave",
+				slog.String("session_id", string(cmd.SessionID)),
+				slog.String("object_id", string(id)),
+			)
+		}
+
 		r.logger.Debug("room command: leave",
 			slog.String("session_id", string(cmd.SessionID)),
 			slog.String("player_id", string(cmd.PlayerID)),
@@ -193,6 +219,17 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 			delete(r.dirtyPlayers, player.PlayerID(att.playerID))
 		}
 		r.sessionMu.Unlock()
+
+		// Release any object locks held by this session.
+		r.sessionMu.Lock()
+		releasedLocks := r.lockMgr.ReleaseBySession(string(cmd.SessionID), time.Now())
+		r.sessionMu.Unlock()
+		for _, id := range releasedLocks {
+			r.logger.Debug("room command: lock released on disconnect",
+				slog.String("session_id", string(cmd.SessionID)),
+				slog.String("object_id", string(id)),
+			)
+		}
 
 		r.logger.Debug("room command: disconnect",
 			slog.String("session_id", string(cmd.SessionID)),
@@ -260,6 +297,121 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 
 		r.logger.Debug("room command: update player transform",
 			slog.String("player_id", string(cmd.PlayerID)),
+		)
+
+	case CmdObjectLockAcquire:
+		payload, ok := cmd.Payload.(ObjectCommandPayload)
+		if !ok {
+			r.logger.Warn("room command: CmdObjectLockAcquire payload is not ObjectCommandPayload",
+				slog.String("session_id", string(cmd.SessionID)),
+			)
+			return
+		}
+		r.sessionMu.Lock()
+		result := r.lockMgr.AcquireLock(
+			payload.ObjectID,
+			string(cmd.UserID),
+			string(cmd.SessionID),
+			cmd.Timestamp,
+		)
+		r.sessionMu.Unlock()
+		if result.Granted {
+			r.logger.Debug("room command: object lock acquired",
+				slog.String("object_id", string(payload.ObjectID)),
+				slog.String("user_id", string(cmd.UserID)),
+			)
+		} else {
+			r.logger.Debug("room command: object lock acquire rejected",
+				slog.String("object_id", string(payload.ObjectID)),
+				slog.String("user_id", string(cmd.UserID)),
+				slog.String("reason", result.Reason),
+			)
+		}
+
+	case CmdObjectLockRefresh:
+		payload, ok := cmd.Payload.(ObjectCommandPayload)
+		if !ok {
+			r.logger.Warn("room command: CmdObjectLockRefresh payload is not ObjectCommandPayload",
+				slog.String("session_id", string(cmd.SessionID)),
+			)
+			return
+		}
+		r.sessionMu.Lock()
+		result := r.lockMgr.RefreshLock(
+			payload.ObjectID,
+			string(cmd.UserID),
+			cmd.Timestamp,
+		)
+		r.sessionMu.Unlock()
+		if result.Granted {
+			r.logger.Debug("room command: object lock refreshed",
+				slog.String("object_id", string(payload.ObjectID)),
+				slog.String("user_id", string(cmd.UserID)),
+			)
+		} else {
+			r.logger.Debug("room command: object lock refresh rejected",
+				slog.String("object_id", string(payload.ObjectID)),
+				slog.String("user_id", string(cmd.UserID)),
+				slog.String("reason", result.Reason),
+			)
+		}
+
+	case CmdObjectLockRelease:
+		payload, ok := cmd.Payload.(ObjectCommandPayload)
+		if !ok {
+			r.logger.Warn("room command: CmdObjectLockRelease payload is not ObjectCommandPayload",
+				slog.String("session_id", string(cmd.SessionID)),
+			)
+			return
+		}
+		r.sessionMu.Lock()
+		result := r.lockMgr.ReleaseLock(
+			payload.ObjectID,
+			string(cmd.UserID),
+			cmd.Timestamp,
+		)
+		r.sessionMu.Unlock()
+		if result.Granted {
+			r.logger.Debug("room command: object lock released",
+				slog.String("object_id", string(payload.ObjectID)),
+				slog.String("user_id", string(cmd.UserID)),
+			)
+		} else {
+			r.logger.Debug("room command: object lock release rejected",
+				slog.String("object_id", string(payload.ObjectID)),
+				slog.String("user_id", string(cmd.UserID)),
+				slog.String("reason", result.Reason),
+			)
+		}
+
+	case CmdObjectUpdate:
+		payload, ok := cmd.Payload.(ObjectCommandPayload)
+		if !ok {
+			r.logger.Warn("room command: CmdObjectUpdate payload is not ObjectCommandPayload",
+				slog.String("session_id", string(cmd.SessionID)),
+			)
+			return
+		}
+		r.sessionMu.Lock()
+		if payload.Transform != nil {
+			if err := r.objectMgr.UpdateTransform(payload.ObjectID, *payload.Transform); err != nil {
+				r.logger.Warn("room command: CmdObjectUpdate transform failed",
+					slog.String("object_id", string(payload.ObjectID)),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
+		if payload.CustomState != nil {
+			if err := r.objectMgr.UpdateCustomState(payload.ObjectID, payload.CustomState); err != nil {
+				r.logger.Warn("room command: CmdObjectUpdate custom state failed",
+					slog.String("object_id", string(payload.ObjectID)),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
+		r.sessionMu.Unlock()
+		r.logger.Debug("room command: object update",
+			slog.String("object_id", string(payload.ObjectID)),
 		)
 
 	default:

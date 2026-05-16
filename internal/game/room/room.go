@@ -9,6 +9,7 @@ import (
 
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/delta"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/interest"
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/object"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/player"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/spatial"
 )
@@ -79,6 +80,14 @@ type Room struct {
 	// broadcast. Accessed only under sessionMu (read or write).
 	dirtyPlayers map[player.PlayerID]struct{}
 
+	// objectMgr manages room object state (create, get, list, update, remove).
+	// Accessed only from the room loop goroutine.
+	objectMgr *object.ObjectManager
+
+	// lockMgr enforces server-authoritative lease-based object locking.
+	// Accessed only from the room loop goroutine.
+	lockMgr *object.LockManager
+
 	// cancel signals the tick loop to stop.
 	cancel context.CancelFunc
 	// done is closed by the tick loop goroutine when it exits.
@@ -108,6 +117,12 @@ func newRoom(spec RoomSpec, logger *slog.Logger) *Room {
 	interestCfg := interest.DefaultInterestConfig()
 	interestCfg.VisualRadiusM = cfg.InterestVisualRadiusM
 
+	lease := cfg.ObjectLockLease
+	if lease.TTL <= 0 {
+		lease = object.DefaultLockLease()
+	}
+	objMgr := object.NewObjectManager()
+
 	return &Room{
 		instanceID:    spec.InstanceID,
 		logicalRoomID: spec.LogicalRoomID,
@@ -126,6 +141,8 @@ func newRoom(spec RoomSpec, logger *slog.Logger) *Room {
 		snapshotCache:    delta.NewSnapshotCache(),
 		deltaBuilder:     delta.NewDeltaBuilder(),
 		dirtyPlayers:     make(map[player.PlayerID]struct{}),
+		objectMgr:        objMgr,
+		lockMgr:          object.NewLockManager(objMgr, lease),
 		done:             make(chan struct{}),
 	}
 }
@@ -273,6 +290,32 @@ func (r *Room) DirtyPlayerCount() int {
 	r.sessionMu.RLock()
 	defer r.sessionMu.RUnlock()
 	return len(r.dirtyPlayers)
+}
+
+// CreateObject registers a room object for server-side initialization.
+// This is for setup by room management code, not for client-driven object creation.
+// Safe to call from any goroutine while the room is running.
+func (r *Room) CreateObject(id object.ObjectID, kind object.ObjectKind, transform object.ObjectTransform) error {
+	r.sessionMu.Lock()
+	defer r.sessionMu.Unlock()
+	_, err := r.objectMgr.Create(id, kind, transform)
+	return err
+}
+
+// ObjectCount returns the total number of tracked room objects (active and inactive).
+// Safe to call from any goroutine; reads under sessionMu.
+func (r *Room) ObjectCount() int {
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+	return r.objectMgr.Count()
+}
+
+// UserLockCount returns the number of active object locks held by the given user.
+// Safe to call from any goroutine; reads under sessionMu.
+func (r *Room) UserLockCount(userID string) int {
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+	return r.lockMgr.UserLockCount(userID)
 }
 
 // buildDeltaBatches computes a per-session DeltaBatch for all active sessions.

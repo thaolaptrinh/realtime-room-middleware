@@ -1,8 +1,9 @@
 # Delta Broadcast
 
-## Status: Skeleton implemented (Milestone 3 / Stage 2 Task 5)
+## Status: Object delta placeholder types added (Stage 2 Task 6)
 
-Object delta, voice group delta, and transport send are deferred to later milestones.
+Player delta skeleton is complete. Object delta placeholder types are defined but not yet wired
+into interest management or transport send. Voice group delta and transport send are deferred.
 
 ## Components
 
@@ -59,11 +60,12 @@ type PlayerDelta struct {
 type DeltaBatch struct {
     Tick        uint32
     PlayerDelta *PlayerDelta
-    // Future: ObjectDelta, VoiceGroupDelta
+    ObjectDelta *ObjectDelta // nil until object transport wiring (Milestone 4)
+    // Future: VoiceGroupDelta
 }
 ```
 
-`DeltaBatch.IsEmpty()` returns true if `PlayerDelta` is nil or empty.
+`DeltaBatch.IsEmpty()` returns true if all contained deltas are nil or empty.
 
 ## Dirty Tracking
 
@@ -105,11 +107,26 @@ Room tick (20 Hz):
 - No object or voice delta yet (deferred to later milestones).
 - No Redis/KEDA dependency.
 
+## Object Delta (Placeholder — Milestone 4)
+
+Types are defined in `internal/game/delta/types.go`:
+
+```go
+type ObjectEnterDelta   // object newly visible
+type ObjectUpdateDelta  // transform or lock changed; nil pointer fields = no change
+type ObjectLeaveDelta   // object left interest range
+type ObjectLockDelta    // lock granted / released / expired (may fire outside normal broadcast)
+type ObjectDelta        // aggregates all of the above for one tick
+```
+
+Not yet wired to interest management, snapshot cache, or transport send.
+
 ## Not Yet Implemented
 
 - MessagePack encoding of delta packets (deferred)
 - Transport send (KCP or WSS) of encoded packets (deferred)
-- `ObjectDelta` and `ObjectEnterDelta/ObjectUpdateDelta/ObjectLeaveDelta` (Milestone 4)
+- Object interest management integration (spatial hash for objects)
+- Object snapshot cache (per-session last-seen object version)
 - `VoiceGroupDelta` (Milestone 5)
 - LOD/blue-avatar thresholds in interest set (deferred)
 - Full snapshot fallback on join/reconnect (deferred — FullSnapshot is a separate message type)
