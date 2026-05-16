@@ -3,6 +3,7 @@ package room
 import (
 	"time"
 
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/cluster"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/object"
 )
 
@@ -59,13 +60,14 @@ func (s RoomStatus) String() string {
 
 // RoomConfig holds per-room configuration.
 type RoomConfig struct {
-	MaxPlayers            int              // Maximum concurrent players allowed.
-	TickRateHz            int              // Room simulation frequency (default 20).
-	BroadcastRateHz       int              // Delta broadcast frequency (default 10).
-	CommandQueueSize      int              // Buffered command channel depth (default 256).
-	SpatialCellSizeM      float32          // Spatial hash cell size in meters (default 10).
-	InterestVisualRadiusM float32          // Visual interest radius in meters (default 30).
-	ObjectLockLease       object.LockLease // Object lock TTL and per-user lock limit.
+	MaxPlayers            int                   // Maximum concurrent players allowed.
+	TickRateHz            int                   // Room simulation frequency (default 20).
+	BroadcastRateHz       int                   // Delta broadcast frequency (default 10).
+	CommandQueueSize      int                   // Buffered command channel depth (default 256).
+	SpatialCellSizeM      float32               // Spatial hash cell size in meters (default 10).
+	InterestVisualRadiusM float32               // Visual interest radius in meters (default 30).
+	ObjectLockLease       object.LockLease      // Object lock TTL and per-user lock limit.
+	ClusterConfig         cluster.ClusterConfig // K-Means position cluster allocator config.
 }
 
 // DefaultRoomConfig returns a RoomConfig with production-default values.
@@ -78,6 +80,7 @@ func DefaultRoomConfig() RoomConfig {
 		SpatialCellSizeM:      10.0,
 		InterestVisualRadiusM: 30.0,
 		ObjectLockLease:       object.DefaultLockLease(),
+		ClusterConfig:         cluster.DefaultClusterConfig(),
 	}
 }
 

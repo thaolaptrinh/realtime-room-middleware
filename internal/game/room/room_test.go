@@ -1965,3 +1965,104 @@ func TestRoom_ObjectUpdate_ThroughRoom(t *testing.T) {
 		t.Errorf("room status = %s, want running", r.Status())
 	}
 }
+
+// ---- Cluster integration tests (Stage 2 Task 8) ----------------------------
+
+func TestRoom_ClusterConfigInitialized(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "cluster-config-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Verify cluster config is initialized from defaults.
+	if r.ClusterConfig().Enabled != true {
+		t.Errorf("ClusterConfig.Enabled = %v, want true", r.ClusterConfig().Enabled)
+	}
+	if r.ClusterConfig().TargetClusterSize != 8 {
+		t.Errorf("ClusterConfig.TargetClusterSize = %d, want 8", r.ClusterConfig().TargetClusterSize)
+	}
+	if r.ClusterConfig().ReclusterIntervalTicks != 10 {
+		t.Errorf("ClusterConfig.ReclusterIntervalTicks = %d, want 10", r.ClusterConfig().ReclusterIntervalTicks)
+	}
+}
+
+func TestRoom_JoinTriggersClusterRecompute(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "cluster-join-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Before any join, cluster output should be empty.
+	output := r.GetClusterOutput()
+	if output.K != 0 {
+		t.Errorf("initial cluster K = %d, want 0", output.K)
+	}
+
+	// Join a player.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: "s1",
+		PlayerID:  "p1",
+		UserID:    "u1",
+		Timestamp: time.Now(),
+	})
+
+	// Wait for cluster recompute (membership dirty triggers immediate recompute).
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		output = r.GetClusterOutput()
+		if output.K == 1 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("cluster K after join = %d, want 1", output.K)
+}
+
+func TestRoom_ClusterOutputIsTransportAgnostic(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "cluster-agnostic-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Join two players with different session types (simulated KCP and WSS).
+	// Transport type is not part of cluster input.
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "kcp-session-1", PlayerID: "p1", UserID: "u1", Timestamp: time.Now()})
+	_ = r.Enqueue(room.RoomCommand{Kind: room.CmdJoin, SessionID: "wss-session-1", PlayerID: "p2", UserID: "u2", Timestamp: time.Now()})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		output := r.GetClusterOutput()
+		if len(output.Assignments) == 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	output := r.GetClusterOutput()
+	if output.K != 1 {
+		t.Errorf("players at origin should form 1 cluster, got K=%d", output.K)
+	}
+
+	// Verify both players are in the same cluster.
+	cid1, ok1 := output.Assignments["p1"]
+	cid2, ok2 := output.Assignments["p2"]
+	if !ok1 || !ok2 {
+		t.Fatal("both players should have cluster assignments")
+	}
+	if cid1 != cid2 {
+		t.Errorf("players should be in same cluster regardless of transport: p1=%d, p2=%d", cid1, cid2)
+	}
+}

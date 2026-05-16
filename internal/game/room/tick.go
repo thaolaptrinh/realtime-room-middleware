@@ -3,8 +3,10 @@ package room
 import (
 	"context"
 	"log/slog"
+	"math"
 	"time"
 
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/cluster"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/player"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/spatial"
 )
@@ -41,14 +43,93 @@ func (r *Room) runTick(ctx context.Context) {
 // Order per tick:
 //  1. Expire stale object locks (before command drain so AcquireLock sees clean state).
 //  2. Drain the command queue.
-//  3. Broadcast deltas at the configured broadcast rate (default 10 Hz).
+//  3. Recompute clusters (if triggered by interval, movement, or membership change).
+//  4. Broadcast deltas at the configured broadcast rate (default 10 Hz).
 func (r *Room) tick() {
 	tick := r.currentTick.Add(1)
 	r.releaseExpiredLocks()
 	r.drainCommands(tick)
+
+	// Cluster recompute scheduling (Phase 1 position cluster sync).
+	if r.shouldRecomputeCluster(tick) {
+		r.recomputeCluster(tick)
+	}
+
 	if r.isBroadcastTick(tick) {
 		r.broadcast(tick)
 	}
+}
+
+// shouldRecomputeCluster evaluates whether a cluster recompute is due.
+// Triggers: interval cadence, movement threshold exceeded, or membership change.
+// Called from the room loop; reads room-loop-only fields.
+func (r *Room) shouldRecomputeCluster(tick uint32) bool {
+	cfg := r.config.ClusterConfig
+	if !cfg.Enabled {
+		return false
+	}
+
+	// Interval trigger: recompute every ReclusterIntervalTicks.
+	ticksSinceLast := tick - r.lastClusterTick
+	if ticksSinceLast >= uint32(cfg.ReclusterIntervalTicks) {
+		return true
+	}
+
+	// Movement trigger: if any player moved more than MovementThreshold since last recompute.
+	if r.maxMovementSinceLastCluster > cfg.MovementThreshold {
+		return true
+	}
+
+	// Membership change trigger: join/leave/disconnect changed player count.
+	if r.clusterMembershipDirty {
+		return true
+	}
+
+	return false
+}
+
+// recomputeCluster runs the K-Means cluster allocator and updates the room's cluster output.
+// Called from the room loop; writes to clusterOutput and resets scheduling flags.
+func (r *Room) recomputeCluster(tick uint32) {
+	startTime := time.Now()
+
+	r.sessionMu.Lock()
+	defer r.sessionMu.Unlock()
+
+	// Build ClusterInput from current player states.
+	players := make([]cluster.ClusterPlayer, 0, len(r.players))
+	for pid, ps := range r.players {
+		transform, _ := ps.Snapshot()
+		players = append(players, cluster.ClusterPlayer{
+			PlayerID: pid,
+			Position: spatial.Pos(transform.Position.X, transform.Position.Z),
+		})
+	}
+
+	input := cluster.ClusterInput{Players: players}
+
+	// Call the cluster allocator (stateful; retains previous output for hysteresis).
+	output, err := r.clusterAlloc.Compute(input, r.config.ClusterConfig)
+	if err != nil {
+		r.logger.Warn("cluster recompute failed",
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+
+	// Commit the new cluster output.
+	r.clusterOutput = output
+	r.lastClusterTick = tick
+	r.maxMovementSinceLastCluster = 0
+	r.clusterMembershipDirty = false
+
+	durationMs := float32(time.Since(startTime).Microseconds()) / 1000.0
+	r.logger.Debug("cluster recompute completed",
+		slog.Uint64("tick", uint64(tick)),
+		slog.Int("clusters", output.K),
+		slog.Int("players", len(players)),
+		slog.Float64("duration_ms", float64(durationMs)),
+	)
 }
 
 // releaseExpiredLocks clears any object locks whose TTL has elapsed.
@@ -137,6 +218,7 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 			r.userSessionIndex[cmd.UserID] = cmd.SessionID
 		}
 		r.playerCount.Add(1)
+		r.clusterMembershipDirty = true
 		r.sessionMu.Unlock()
 
 		// Create player state for this player.
@@ -173,6 +255,7 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 		}
 		if ok {
 			r.playerCount.Add(-1)
+			r.clusterMembershipDirty = true
 			if p, exists := r.players[player.PlayerID(cmd.PlayerID)]; exists {
 				p.MarkStatus(player.PlayerStatusLeaving)
 				delete(r.players, player.PlayerID(cmd.PlayerID))
@@ -210,6 +293,7 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 		}
 		if ok {
 			r.playerCount.Add(-1)
+			r.clusterMembershipDirty = true
 			if p, exists := r.players[player.PlayerID(att.playerID)]; exists {
 				p.MarkStatus(player.PlayerStatusGone)
 				delete(r.players, player.PlayerID(att.playerID))
@@ -252,6 +336,16 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 		}
 		r.sessionMu.Lock()
 		if p, exists := r.players[player.PlayerID(cmd.PlayerID)]; exists {
+			// Track movement for cluster recompute trigger.
+			prevTransform, _ := p.Snapshot()
+			newPos := input.Transform.Position
+			dx := newPos.X - prevTransform.Position.X
+			dz := newPos.Z - prevTransform.Position.Z
+			dist := float32(math.Sqrt(float64(dx*dx + dz*dz)))
+			if dist > r.maxMovementSinceLastCluster {
+				r.maxMovementSinceLastCluster = dist
+			}
+
 			p.UpdateTransform(input.Transform, tick)
 			if err := r.spatial.Update(
 				spatial.EntityID(cmd.PlayerID),
@@ -281,6 +375,16 @@ func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 		}
 		r.sessionMu.Lock()
 		if p, exists := r.players[player.PlayerID(cmd.PlayerID)]; exists {
+			// Track movement for cluster recompute trigger.
+			prevTransform, _ := p.Snapshot()
+			newPos := transform.Position
+			dx := newPos.X - prevTransform.Position.X
+			dz := newPos.Z - prevTransform.Position.Z
+			dist := float32(math.Sqrt(float64(dx*dx + dz*dz)))
+			if dist > r.maxMovementSinceLastCluster {
+				r.maxMovementSinceLastCluster = dist
+			}
+
 			p.UpdateTransform(transform, tick)
 			if err := r.spatial.Update(
 				spatial.EntityID(cmd.PlayerID),

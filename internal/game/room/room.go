@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/cluster"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/delta"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/interest"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/object"
@@ -88,6 +89,31 @@ type Room struct {
 	// Accessed only from the room loop goroutine.
 	lockMgr *object.LockManager
 
+	// --- Cluster state ----------------------------------------------------------
+
+	// clusterAlloc is the position cluster allocator. Called only from the room loop.
+	clusterAlloc cluster.ClusterAllocator
+
+	// clusterOutput is the latest cluster assignment result. Protected by sessionMu
+	// for external reads (GetClusterOutput, PlayerCluster, VisiblePlayersFor).
+	// Written by the room loop under sessionMu.Lock().
+	clusterOutput cluster.ClusterOutput
+
+	// The following cluster scheduling fields are room-loop-only.
+	// No mutex is needed; they are read and written exclusively by runTick.
+
+	// lastClusterTick is the tick at which the last cluster recompute occurred.
+	lastClusterTick uint32
+
+	// maxMovementSinceLastCluster tracks the maximum single-player movement (meters)
+	// since the last recompute. Triggers an early recompute when it exceeds
+	// ClusterConfig.MovementThreshold.
+	maxMovementSinceLastCluster float32
+
+	// clusterMembershipDirty is set true on any join, leave, or disconnect that
+	// changes the actual player count. Triggers an early recompute.
+	clusterMembershipDirty bool
+
 	// cancel signals the tick loop to stop.
 	cancel context.CancelFunc
 	// done is closed by the tick loop goroutine when it exits.
@@ -143,6 +169,8 @@ func newRoom(spec RoomSpec, logger *slog.Logger) *Room {
 		dirtyPlayers:     make(map[player.PlayerID]struct{}),
 		objectMgr:        objMgr,
 		lockMgr:          object.NewLockManager(objMgr, lease),
+		clusterAlloc:     cluster.NewKMeansClusterAllocator(),
+		clusterOutput:    cluster.ClusterOutput{Assignments: make(map[player.PlayerID]cluster.ClusterID), Clusters: make(map[cluster.ClusterID][]player.PlayerID), Centroids: make(map[cluster.ClusterID]spatial.EntityPosition)},
 		done:             make(chan struct{}),
 	}
 }
@@ -152,6 +180,9 @@ func (r *Room) InstanceID() RoomInstanceID { return r.instanceID }
 
 // LogicalRoomID returns the product-facing room identifier.
 func (r *Room) LogicalRoomID() LogicalRoomID { return r.logicalRoomID }
+
+// ClusterConfig returns the cluster configuration for this room.
+func (r *Room) ClusterConfig() cluster.ClusterConfig { return r.config.ClusterConfig }
 
 // Status returns the current lifecycle status.
 func (r *Room) Status() RoomStatus {
@@ -321,7 +352,7 @@ func (r *Room) UserLockCount(userID string) int {
 // buildDeltaBatches computes a per-session DeltaBatch for all active sessions.
 //
 // Called by broadcast(). Must be called with sessionMu held (write lock) since it
-// reads activeSessions, players, spatial, and mutates snapshotCache.
+// reads activeSessions, players, spatial, clusterOutput, and mutates snapshotCache.
 func (r *Room) buildDeltaBatches(tick uint32) map[SessionID]*delta.DeltaBatch {
 	if len(r.activeSessions) == 0 {
 		return nil
@@ -337,14 +368,33 @@ func (r *Room) buildDeltaBatches(tick uint32) map[SessionID]*delta.DeltaBatch {
 			continue
 		}
 
-		transform, _ := ps.Snapshot()
-		viewerPos := spatial.Pos(transform.Position.X, transform.Position.Z)
+		var visiblePlayers []player.PlayerID
 
-		interestSet := r.interestMgr.QueryVisiblePlayers(r.spatial, viewerPos, spatial.EntityID(pid))
-
-		visiblePlayers := make([]player.PlayerID, len(interestSet.VisiblePlayers))
-		for i, id := range interestSet.VisiblePlayers {
-			visiblePlayers[i] = player.PlayerID(id)
+		if r.config.ClusterConfig.Enabled {
+			// Cluster-based interest: use cluster membership when enabled.
+			viewerCluster, ok := r.clusterOutput.Assignments[pid]
+			if !ok {
+				// Player not in cluster output (e.g., empty room after join).
+				visiblePlayers = []player.PlayerID{}
+			} else {
+				members := r.clusterOutput.Clusters[viewerCluster]
+				// Exclude self.
+				visiblePlayers = make([]player.PlayerID, 0, len(members))
+				for _, memberID := range members {
+					if memberID != pid {
+						visiblePlayers = append(visiblePlayers, memberID)
+					}
+				}
+			}
+		} else {
+			// Fallback: radius-based interest.
+			transform, _ := ps.Snapshot()
+			viewerPos := spatial.Pos(transform.Position.X, transform.Position.Z)
+			interestSet := r.interestMgr.QueryVisiblePlayers(r.spatial, viewerPos, spatial.EntityID(pid))
+			visiblePlayers = make([]player.PlayerID, len(interestSet.VisiblePlayers))
+			for i, id := range interestSet.VisiblePlayers {
+				visiblePlayers[i] = player.PlayerID(id)
+			}
 		}
 
 		snapshot := r.snapshotCache.GetOrCreate(string(sessionID))
@@ -357,4 +407,65 @@ func (r *Room) buildDeltaBatches(tick uint32) map[SessionID]*delta.DeltaBatch {
 	}
 
 	return batches
+}
+
+// --- Cluster query helpers ----------------------------------------------------
+
+// GetClusterOutput returns a copy of the current cluster output.
+// Safe to call from any goroutine; returns a consistent snapshot.
+func (r *Room) GetClusterOutput() cluster.ClusterOutput {
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+
+	// Return a shallow copy of the output; the internal maps are not copied further
+	// because they are only ever reassigned, not mutated in place, by the room loop.
+	return r.clusterOutput
+}
+
+// PlayerCluster returns the cluster ID assigned to the given player.
+// Returns false if the player is not found in the current cluster output.
+// Safe to call from any goroutine.
+func (r *Room) PlayerCluster(pid player.PlayerID) (cluster.ClusterID, bool) {
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+	cid, ok := r.clusterOutput.Assignments[pid]
+	return cid, ok
+}
+
+// VisiblePlayersFor returns the visible players for the given player using
+// cluster-based interest when enabled, or falls back to radius-based interest
+// when disabled. Excludes the player themselves.
+// Safe to call from any goroutine.
+func (r *Room) VisiblePlayersFor(pid player.PlayerID) []player.PlayerID {
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+
+	if r.config.ClusterConfig.Enabled {
+		viewerCluster, ok := r.clusterOutput.Assignments[pid]
+		if !ok {
+			return []player.PlayerID{}
+		}
+		members := r.clusterOutput.Clusters[viewerCluster]
+		result := make([]player.PlayerID, 0, len(members))
+		for _, memberID := range members {
+			if memberID != pid {
+				result = append(result, memberID)
+			}
+		}
+		return result
+	}
+
+	// Fallback to radius-based interest.
+	ps, ok := r.players[pid]
+	if !ok {
+		return []player.PlayerID{}
+	}
+	transform, _ := ps.Snapshot()
+	viewerPos := spatial.Pos(transform.Position.X, transform.Position.Z)
+	interestSet := r.interestMgr.QueryVisiblePlayers(r.spatial, viewerPos, spatial.EntityID(pid))
+	result := make([]player.PlayerID, len(interestSet.VisiblePlayers))
+	for i, id := range interestSet.VisiblePlayers {
+		result[i] = player.PlayerID(id)
+	}
+	return result
 }
