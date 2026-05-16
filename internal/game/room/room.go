@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/player"
 )
 
 // Room is the runtime instance of a room.
@@ -32,6 +34,10 @@ type Room struct {
 	// Modified only inside runTick; readable from any goroutine via atomic load.
 	playerCount atomic.Int32
 
+	// currentTick is the simulation tick counter, incremented each tick loop.
+	// Readable from any goroutine via atomic load; written only by runTick.
+	currentTick atomic.Uint32
+
 	// sessionMu protects activeSessions and userSessionIndex.
 	// The room loop holds the write lock when mutating (inside handleCommand).
 	// External callers hold the read lock via HasSession, HasUser, ActiveSessions.
@@ -44,6 +50,11 @@ type Room struct {
 	// userSessionIndex maps UserID → SessionID for duplicate-join detection.
 	// Written only by the room loop goroutine (runTick).
 	userSessionIndex map[UserID]SessionID
+
+	// players maps PlayerID → PlayerState for players in this room.
+	// Written only by the room loop goroutine (runTick).
+	// External callers may read snapshots via GetPlayerState.
+	players map[player.PlayerID]*player.PlayerState
 
 	// cancel signals the tick loop to stop.
 	cancel context.CancelFunc
@@ -73,6 +84,7 @@ func newRoom(spec RoomSpec, logger *slog.Logger) *Room {
 		status:           RoomStatusCreated,
 		activeSessions:   make(map[SessionID]sessionAttachment),
 		userSessionIndex: make(map[UserID]SessionID),
+		players:          make(map[player.PlayerID]*player.PlayerState),
 		done:             make(chan struct{}),
 	}
 }
@@ -124,6 +136,29 @@ func (r *Room) ActiveSessions() []SessionID {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// CurrentTick returns the current simulation tick counter.
+// Safe to call from any goroutine.
+func (r *Room) CurrentTick() uint32 {
+	return r.currentTick.Load()
+}
+
+// GetPlayerState returns a snapshot of the player's current transform and version.
+// Returns false if the player is not in the room.
+// Safe to call from any goroutine.
+func (r *Room) GetPlayerState(id player.PlayerID) (player.PlayerTransform, uint32, bool) {
+	// Note: players map is only written by the room loop, but we need a lock
+	// to safely read from it while the room loop may be adding/removing players.
+	// For simplicity, we use the sessionMu which already covers mutations.
+	r.sessionMu.RLock()
+	defer r.sessionMu.RUnlock()
+	p, ok := r.players[id]
+	if !ok {
+		return player.PlayerTransform{}, 0, false
+	}
+	transform, version := p.Snapshot()
+	return transform, version, true
 }
 
 // Enqueue submits a command to the room loop queue.

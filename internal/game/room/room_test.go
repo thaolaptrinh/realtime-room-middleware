@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/player"
 	"github.com/thaonguyen/realtime-room-middleware/internal/game/room"
 )
 
@@ -697,4 +699,347 @@ func TestRoom_DisconnectRemovesSession(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Error("HasSession should return false after CmdDisconnect")
+}
+
+// ---- Player state and transform tests --------------------------------------
+
+func TestRoom_PlayerStateCreatedOnJoin(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "player-state-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: "s1",
+		PlayerID:  "p1",
+		UserID:    "u1",
+		Timestamp: time.Now(),
+	})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		transform, version, ok := r.GetPlayerState("p1")
+		if ok {
+			// Check initial state.
+			if transform.Position != (player.Vector3{}) {
+				t.Errorf("initial Position = %v, want zero", transform.Position)
+			}
+			if transform.Rotation != player.IdentityQuaternion {
+				t.Errorf("initial Rotation = %v, want identity", transform.Rotation)
+			}
+			if version != 0 {
+				t.Errorf("initial Version = %d, want 0", version)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("player state not found after join")
+}
+
+func TestRoom_PlayerStateRemovedOnLeave(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "player-leave-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Join first.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: "s1",
+		PlayerID:  "p1",
+		UserID:    "u1",
+		Timestamp: time.Now(),
+	})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, _, ok := r.GetPlayerState("p1"); ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, _, ok := r.GetPlayerState("p1"); !ok {
+		t.Fatal("precondition: player state should exist after join")
+	}
+
+	// Leave.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdLeave,
+		SessionID: "s1",
+		PlayerID:  "p1",
+		Timestamp: time.Now(),
+	})
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, _, ok := r.GetPlayerState("p1"); !ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("player state should be removed after leave")
+}
+
+func TestRoom_PlayerStateRemovedOnDisconnect(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "player-disconnect-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Join.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: "s1",
+		PlayerID:  "p1",
+		UserID:    "u1",
+		Timestamp: time.Now(),
+	})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, _, ok := r.GetPlayerState("p1"); ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, _, ok := r.GetPlayerState("p1"); !ok {
+		t.Fatal("precondition: player state should exist after join")
+	}
+
+	// Disconnect.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdDisconnect,
+		SessionID: "s1",
+		Timestamp: time.Now(),
+	})
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, _, ok := r.GetPlayerState("p1"); !ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("player state should be removed after disconnect")
+}
+
+func TestRoom_UpdatePlayerTransform(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "transform-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Join first.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: "s1",
+		PlayerID:  "p1",
+		UserID:    "u1",
+		Timestamp: time.Now(),
+	})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, _, ok := r.GetPlayerState("p1"); ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Send player input.
+	input := player.PlayerInput{
+		Seq: 1,
+		Transform: player.PlayerTransform{
+			Position: player.Vector3{X: 10, Y: 20, Z: 30},
+			Rotation: player.IdentityQuaternion,
+		},
+		Timestamp: time.Now().UnixMilli(),
+	}
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdPlayerInput,
+		PlayerID:  "p1",
+		Payload:   input,
+		Timestamp: time.Now(),
+	})
+
+	// Wait for transform update.
+	deadline = time.Now().Add(500 * time.Millisecond)
+	found := false
+	for time.Now().Before(deadline) {
+		if transform, version, ok := r.GetPlayerState("p1"); ok {
+			if transform.Position.X == 10 && transform.Position.Y == 20 && transform.Position.Z == 30 {
+				if version == 1 {
+					found = true
+					break
+				}
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if !found {
+		t.Error("player transform not updated after CmdPlayerInput")
+	}
+}
+
+func TestRoom_RejectInvalidPlayerInput(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "invalid-input-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Join first.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: "s1",
+		PlayerID:  "p1",
+		UserID:    "u1",
+		Timestamp: time.Now(),
+	})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, _, ok := r.GetPlayerState("p1"); ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Send invalid input (NaN position).
+	input := player.PlayerInput{
+		Seq: 1,
+		Transform: player.PlayerTransform{
+			Position: player.Vector3{X: float32(math.NaN()), Y: 0, Z: 0},
+			Rotation: player.IdentityQuaternion,
+		},
+		Timestamp: time.Now().UnixMilli(),
+	}
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdPlayerInput,
+		PlayerID:  "p1",
+		Payload:   input,
+		Timestamp: time.Now(),
+	})
+
+	// Wait a bit for the tick loop to process.
+	time.Sleep(100 * time.Millisecond)
+
+	// Transform should not have changed (version still 0, position still zero).
+	transform, version, ok := r.GetPlayerState("p1")
+	if !ok {
+		t.Fatal("player state should still exist")
+	}
+	if version != 0 {
+		t.Errorf("version after invalid input = %d, want 0 (unchanged)", version)
+	}
+	if transform.Position != (player.Vector3{}) {
+		t.Errorf("position after invalid input = %v, want zero (unchanged)", transform.Position)
+	}
+}
+
+func TestRoom_UpdatePlayerTransformDirect(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "direct-transform-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	// Join first.
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdJoin,
+		SessionID: "s1",
+		PlayerID:  "p1",
+		UserID:    "u1",
+		Timestamp: time.Now(),
+	})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, _, ok := r.GetPlayerState("p1"); ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Send direct transform update (CmdUpdatePlayerTransform).
+	transform := player.PlayerTransform{
+		Position: player.Vector3{X: 5, Y: 15, Z: 25},
+		Rotation: player.IdentityQuaternion,
+	}
+	_ = r.Enqueue(room.RoomCommand{
+		Kind:      room.CmdUpdatePlayerTransform,
+		PlayerID:  "p1",
+		Payload:   transform,
+		Timestamp: time.Now(),
+	})
+
+	// Wait for transform update.
+	deadline = time.Now().Add(500 * time.Millisecond)
+	found := false
+	for time.Now().Before(deadline) {
+		if t, version, ok := r.GetPlayerState("p1"); ok {
+			if t.Position.X == 5 && t.Position.Y == 15 && t.Position.Z == 25 {
+				if version == 1 {
+					found = true
+					break
+				}
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if !found {
+		t.Error("player transform not updated after CmdUpdatePlayerTransform")
+	}
+}
+
+func TestRoom_CurrentTick(t *testing.T) {
+	mgr := newTestManager(newTestRegistry())
+	ctx := context.Background()
+
+	r, err := mgr.CreateRoom(ctx, "tick-room")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	defer r.Stop()
+
+	initialTick := r.CurrentTick()
+	if initialTick != 0 {
+		t.Errorf("initial tick = %d, want 0", initialTick)
+	}
+
+	// Wait for a few ticks.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.CurrentTick() >= 3 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("tick counter did not advance within deadline: got %d, want >= 3", r.CurrentTick())
 }

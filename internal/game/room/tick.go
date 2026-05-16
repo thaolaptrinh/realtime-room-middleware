@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/thaonguyen/realtime-room-middleware/internal/game/player"
 )
 
 // runTick is the room loop goroutine.
@@ -35,7 +37,7 @@ func (r *Room) runTick(ctx context.Context) {
 
 // tick executes one simulation step.
 //
-// Current implementation: drains and dispatches the command queue.
+// Current implementation: increments tick counter, drains and dispatches the command queue.
 //
 // Future milestones will extend this to:
 //   - update player state
@@ -45,15 +47,16 @@ func (r *Room) runTick(ctx context.Context) {
 //   - allocate voice/proximity groups
 //   - build and enqueue delta packets
 func (r *Room) tick() {
-	r.drainCommands()
+	tick := r.currentTick.Add(1)
+	r.drainCommands(tick)
 }
 
 // drainCommands processes all queued commands without blocking.
-func (r *Room) drainCommands() {
+func (r *Room) drainCommands(tick uint32) {
 	for {
 		select {
 		case cmd := <-r.commands:
-			r.handleCommand(cmd)
+			r.handleCommand(cmd, tick)
 		default:
 			return
 		}
@@ -62,7 +65,7 @@ func (r *Room) drainCommands() {
 
 // handleCommand dispatches a single RoomCommand.
 // Only the room loop calls this function — it is the mutation boundary.
-func (r *Room) handleCommand(cmd RoomCommand) {
+func (r *Room) handleCommand(cmd RoomCommand, tick uint32) {
 	switch cmd.Kind {
 	case CmdJoin:
 		r.sessionMu.Lock()
@@ -84,8 +87,18 @@ func (r *Room) handleCommand(cmd RoomCommand) {
 		if cmd.UserID != "" {
 			r.userSessionIndex[cmd.UserID] = cmd.SessionID
 		}
-		r.sessionMu.Unlock()
 		r.playerCount.Add(1)
+		r.sessionMu.Unlock()
+
+		// Create player state for this player.
+		pid := player.PlayerID(cmd.PlayerID)
+		uid := player.UserID(cmd.UserID)
+		p := player.NewPlayerState(pid, uid, cmd.Timestamp)
+		p.SetStatus(player.PlayerStatusActive)
+
+		r.sessionMu.Lock()
+		r.players[pid] = p
+		r.sessionMu.Unlock()
 
 		r.logger.Debug("room command: join",
 			slog.String("session_id", string(cmd.SessionID)),
@@ -102,10 +115,15 @@ func (r *Room) handleCommand(cmd RoomCommand) {
 				delete(r.userSessionIndex, att.userID)
 			}
 		}
-		r.sessionMu.Unlock()
 		if ok {
 			r.playerCount.Add(-1)
+			// Mark player as leaving, then remove from players map.
+			if p, exists := r.players[player.PlayerID(cmd.PlayerID)]; exists {
+				p.MarkStatus(player.PlayerStatusLeaving)
+				delete(r.players, player.PlayerID(cmd.PlayerID))
+			}
 		}
+		r.sessionMu.Unlock()
 
 		r.logger.Debug("room command: leave",
 			slog.String("session_id", string(cmd.SessionID)),
@@ -121,13 +139,67 @@ func (r *Room) handleCommand(cmd RoomCommand) {
 				delete(r.userSessionIndex, att.userID)
 			}
 		}
-		r.sessionMu.Unlock()
 		if ok {
 			r.playerCount.Add(-1)
+			// Remove player state on disconnect.
+			if p, exists := r.players[player.PlayerID(att.playerID)]; exists {
+				p.MarkStatus(player.PlayerStatusGone)
+				delete(r.players, player.PlayerID(att.playerID))
+			}
 		}
+		r.sessionMu.Unlock()
 
 		r.logger.Debug("room command: disconnect",
 			slog.String("session_id", string(cmd.SessionID)),
+		)
+
+	case CmdPlayerInput:
+		// Validate and process player movement input.
+		// Payload must be player.PlayerInput.
+		input, ok := cmd.Payload.(player.PlayerInput)
+		if !ok {
+			r.logger.Warn("room command: CmdPlayerInput payload is not PlayerInput",
+				slog.String("player_id", string(cmd.PlayerID)),
+			)
+			return
+		}
+		if err := player.ValidatePlayerInput(input); err != nil {
+			r.logger.Warn("room command: invalid player input",
+				slog.String("player_id", string(cmd.PlayerID)),
+				slog.String("error", err.Error()),
+			)
+			return
+		}
+		// Update player transform if player exists.
+		r.sessionMu.Lock()
+		if p, exists := r.players[player.PlayerID(cmd.PlayerID)]; exists {
+			p.UpdateTransform(input.Transform, tick)
+		}
+		r.sessionMu.Unlock()
+
+		r.logger.Debug("room command: player input",
+			slog.String("player_id", string(cmd.PlayerID)),
+			slog.Uint64("seq", uint64(input.Seq)),
+		)
+
+	case CmdUpdatePlayerTransform:
+		// Internal command: directly update player transform (already validated).
+		// Payload must be player.PlayerTransform.
+		transform, ok := cmd.Payload.(player.PlayerTransform)
+		if !ok {
+			r.logger.Warn("room command: CmdUpdatePlayerTransform payload is not PlayerTransform",
+				slog.String("player_id", string(cmd.PlayerID)),
+			)
+			return
+		}
+		r.sessionMu.Lock()
+		if p, exists := r.players[player.PlayerID(cmd.PlayerID)]; exists {
+			p.UpdateTransform(transform, tick)
+		}
+		r.sessionMu.Unlock()
+
+		r.logger.Debug("room command: update player transform",
+			slog.String("player_id", string(cmd.PlayerID)),
 		)
 
 	default:

@@ -2,11 +2,13 @@
 
 ## Scope
 
-Milestone 2 (Stage 2 Task 1) deliverable. Logical/instance room IDs, RoomManager, InMemoryRoomRegistry, room lifecycle (create, start, stop, close), and tick loop skeleton.
+Milestone 2 (Stage 2 Task 1 and Task 3) deliverable. Logical/instance room IDs, RoomManager, InMemoryRoomRegistry, room lifecycle (create, start, stop, close), tick loop skeleton, and player transform state skeleton.
 
 ## Implementation Status
 
-Complete for Phase 1 single-vps skeleton. Player sync, spatial hashing, delta broadcast, object locking, and voice grouping are deferred to later milestones.
+**Stage 2 Task 1 (Room Manager)**: Complete for Phase 1 single-vps skeleton.
+
+**Stage 2 Task 3 (Player Transform Skeleton)**: Complete. Player position and rotation state tracking with validation is implemented. Spatial hashing, delta broadcast, object locking, and voice grouping are deferred to later milestones.
 
 ## Files
 
@@ -15,12 +17,22 @@ internal/game/room/doc.go         — package documentation
 internal/game/room/types.go       — LogicalRoomID, RoomInstanceID, RoomStatus, RoomConfig,
                                     RoomCommandKind, RoomCommand, RoomSpec, RoomInstance
 internal/game/room/registry.go    — RoomRegistry interface, InMemoryRoomRegistry
-internal/game/room/room.go        — Room struct, newRoom(), getters, Enqueue()
+internal/game/room/room.go        — Room struct, newRoom(), getters, Enqueue(),
+                                    GetPlayerState(), CurrentTick()
 internal/game/room/lifecycle.go   — Start(), Stop()
 internal/game/room/tick.go        — runTick(), tick(), drainCommands(), handleCommand()
+                                    (now handles player transform updates)
 internal/game/room/manager.go     — RoomManager, NewRoomManager(), CreateRoom(), GetRoom(),
                                     CloseRoom(), Shutdown(), ActiveRoomCount()
 internal/game/room/room_test.go   — unit and integration tests
+
+internal/game/player/doc.go       — package documentation
+internal/game/player/player.go     — PlayerID, UserID, PlayerStatus, PlayerState,
+                                    NewPlayerState(), Snapshot(), UpdateTransform()
+internal/game/player/types.go      — Vector3, Quaternion, PlayerTransform, PlayerInput
+internal/game/player/validate.go   — ValidatePlayerID, ValidateUserID, ValidateVector3,
+                                    ValidateQuaternion, ValidatePlayerTransform, ValidatePlayerInput
+internal/game/player/player_test.go — unit tests for player types and validation
 ```
 
 ## Domain Types
@@ -33,10 +45,15 @@ internal/game/room/room_test.go   — unit and integration tests
 | `SessionID`       | Transport session identifier (string)                  |
 | `RoomStatus`      | Created / Running / Draining / Closed                  |
 | `RoomConfig`      | MaxPlayers, TickRateHz, BroadcastRateHz, CommandQueueSize |
-| `RoomCommandKind` | CmdJoin, CmdLeave, CmdDisconnect (extensible)          |
+| `RoomCommandKind` | CmdJoin, CmdLeave, CmdDisconnect, CmdPlayerInput, CmdUpdatePlayerTransform |
 | `RoomCommand`     | Envelope sent to room loop by transport goroutines     |
 | `RoomSpec`        | Input for creating a room (logical ID, instance ID, config) |
 | `RoomInstance`    | Registry metadata record (not live room state)         |
+| `Vector3`         | 3D position with X, Y, Z float32 components            |
+| `Quaternion`      | Rotation as X, Y, Z, W unit quaternion                 |
+| `PlayerTransform` | Position + rotation + tick                            |
+| `PlayerInput`     | Client movement update with sequence number            |
+| `PlayerState`     | Player runtime record with transform, version, status  |
 
 ## RoomRegistry Interface
 
@@ -164,16 +181,32 @@ Buffered channel (`RoomConfig.CommandQueueSize`, default 256). Enqueue returns a
 | KCP and WebSocket sessions both register          | ✓      |
 | session package does not import game/room         | ✓      |
 
+### Player Transform (Stage 2 Task 3)
+
+| Test                                              | Status |
+|---------------------------------------------------|--------|
+| PlayerState created on CmdJoin                    | ✓      |
+| PlayerState removed on CmdLeave                   | ✓      |
+| PlayerState removed on CmdDisconnect              | ✓      |
+| UpdateTransform increments version                | ✓      |
+| GetPlayerState returns consistent snapshot        | ✓      |
+| CmdPlayerInput updates player transform           | ✓      |
+| CmdUpdatePlayerTransform updates transform        | ✓      |
+| Invalid player input rejected (NaN/Inf)           | ✓      |
+| CurrentTick increments each tick loop             | ✓      |
+| Player transform validation works                 | ✓      |
+| Transport packages still do not import game/room  | ✓      |
+
 ## What Remains Intentionally Unimplemented
 
-- Player state movement input (`PlayerState.Position`, `Rotation`, `AnimState`)
-- Spatial hashing (`SpatialIndex`)
-- Interest management (`InterestManager`)
-- Delta broadcast (`DeltaBroadcaster`, `ClientSnapshotCache`)
-- Object state and locking (`ObjectState`, `ObjectLockManager`)
-- Voice grouping (`VoiceGroupAllocator`)
-- Session token validation (deferred with transport milestone)
-- Reconnect flow
-- Idle room cleanup (no auto-detection yet)
-- FullSnapshot and delta packet encoding
-- Redis registry (`RedisRoomRegistry`) — Phase 2 only
+- **Player animation state** (`AnimState`) — transform skeleton is in place, but animation state tracking is deferred
+- **Spatial hashing** (`SpatialIndex`)
+- **Interest management** (`InterestManager`)
+- **Delta broadcast** (`DeltaBroadcaster`, `ClientSnapshotCache`)
+- **Object state and locking** (`ObjectState`, `ObjectLockManager`)
+- **Voice grouping** (`VoiceGroupAllocator`)
+- **Session token validation** (deferred with transport milestone)
+- **Reconnect flow**
+- **Idle room cleanup** (no auto-detection yet)
+- **FullSnapshot and delta packet encoding**
+- **Redis registry** (`RedisRoomRegistry`) — Phase 2 only

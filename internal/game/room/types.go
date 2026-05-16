@@ -75,10 +75,12 @@ func DefaultRoomConfig() RoomConfig {
 type RoomCommandKind uint8
 
 const (
-	CmdJoin       RoomCommandKind = iota + 1 // Player session joining the room.
-	CmdLeave                                  // Player session leaving gracefully.
-	CmdDisconnect                             // Transport session disconnected unexpectedly.
-	// Future: CmdPlayerInput, CmdObjectCommand, CmdObjectLock, etc.
+	CmdJoin                  RoomCommandKind = iota + 1 // Player session joining the room.
+	CmdLeave                                            // Player session leaving gracefully.
+	CmdDisconnect                                       // Transport session disconnected unexpectedly.
+	CmdPlayerInput                                      // Player movement/transform input from client.
+	CmdUpdatePlayerTransform                            // Internal: update player transform (validated).
+	// Future: CmdObjectCommand, CmdObjectLock, etc.
 )
 
 // RoomCommand is an envelope for commands enqueued by transport goroutines.
@@ -89,7 +91,7 @@ type RoomCommand struct {
 	SessionID SessionID
 	PlayerID  PlayerID
 	// UserID is the authenticated user identity. Set on CmdJoin for duplicate detection.
-	UserID    UserID
+	UserID UserID
 	// Payload holds kind-specific data; typed per command kind in future milestones.
 	Payload   any
 	Timestamp time.Time
