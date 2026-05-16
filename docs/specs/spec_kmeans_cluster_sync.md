@@ -373,21 +373,31 @@ Cross-cluster visibility (transitional zone):
 
 ---
 
-## Implementation Status (Stage 2 Task 7)
+## Implementation Status (Stage 2 Task 9 — Complete)
 
-The cluster allocator skeleton is implemented:
+The cluster allocator is fully implemented and integrated with delta building:
 
+**Completed (Stage 2 Task 7):**
 - `ClusterAllocator` interface — `internal/game/cluster/allocator.go`
 - `KMeansClusterAllocator` — `internal/game/cluster/kmeans.go`
 - Domain types and config — `internal/game/cluster/types.go`
 - Unit tests — `internal/game/cluster/kmeans_test.go`
 
-Not yet implemented (intentionally deferred to next tasks):
+**Completed (Stage 2 Task 8):**
+- `ClusterConfig` integrated into `RoomConfig` — `internal/game/room/types.go`
+- Room loop calls `ClusterAllocator.Compute` on triggers (interval, movement, membership change)
+- Cluster output stored in `Room.clusterOutput`
+- Cluster query helpers: `GetClusterOutput()`, `PlayerCluster()`, `VisiblePlayersFor()`
 
-- `ClusterConfig` is not in `RoomConfig` — room integration is the next task.
-- The room loop does not call `ClusterAllocator.Compute` — deferred to room integration.
-- The broadcast path still uses `InterestManager.QueryVisiblePlayers` (radius query) — deferred.
-- No cluster metrics are emitted — deferred.
+**Completed (Stage 2 Task 9):**
+- Cluster-based delta building integrated in `Room.buildDeltaBatches()` — `internal/game/room/room.go`
+- When `cluster_enabled=true`: visible players = cluster members (excluding self)
+- When `cluster_enabled=false`: visible players = radius query via `InterestManager`
+- Comprehensive tests for cluster-based delta building — `internal/game/room/cluster_delta_test.go`
+
+**Not yet implemented (intentionally deferred):**
+- Cluster metrics emission — deferred
+- `ClusterMembershipDelta` message (type 1011) — remains reserved, not implemented in Phase 1
 
 Hysteresis skeleton note: centroids in the output reflect K-Means convergence, not
 post-hysteresis membership. The prevCentroid used in the next recompute is the K-Means

@@ -9,7 +9,7 @@ Phase 1 delta broadcast covers player position sync only.
 | PlayerEnterDelta | Implemented (skeleton) |
 | PlayerUpdateDelta | Implemented (skeleton) |
 | PlayerLeaveDelta | Implemented (skeleton) |
-| Cluster-based interest (replaces radius query as primary path) | Spec complete — not yet implemented |
+| Cluster-based interest (replaces radius query as primary path) | **Implemented (Stage 2 Task 9)** |
 | Position dirty tracking | Implemented |
 | Per-client snapshot cache | Implemented |
 | MessagePack encoding of PlayerDelta | Not yet implemented |
@@ -23,10 +23,14 @@ Deferred from Phase 1:
 | ObjectLockDelta | Deferred / Future Scope |
 | VoiceGroupDelta | Deferred / Future Scope |
 
-## Status: Object delta placeholder types added (Stage 2 Task 6)
+## Status: Cluster-based delta building integrated (Stage 2 Task 9)
 
-Player delta skeleton is complete. Object delta placeholder types are defined but not yet wired
-into interest management or transport send. Voice group delta and transport send are deferred.
+Player delta skeleton is complete. Cluster-based interest management is fully integrated with delta building.
+
+- `Room.buildDeltaBatches` uses `ClusterOutput` to determine visible players when `cluster_enabled=true`
+- Falls back to `InterestManager` radius query when `cluster_enabled=false`
+- Object delta placeholder types are defined but not yet wired into interest management or transport send
+- Voice group delta and transport send are deferred
 
 ## Components
 
@@ -170,18 +174,17 @@ Phase 1 items not yet implemented:
 - MessagePack encoding of PlayerDelta packets
 - Transport send (KCP or WSS) of encoded PlayerDelta packets
 - FullSnapshot on join/reconnect (deferred — FullSnapshot is a separate message type)
-- Cluster-based interest set wired into buildDeltaBatches (skeleton done; room integration pending)
-- ClusterConfig in RoomConfig
-- ClusterAllocator called from room tick
 ```
 
-ClusterAllocator skeleton completed in Stage 2 Task 7:
+ClusterAllocator and cluster-based delta building completed in Stage 2 Tasks 7-9:
 
 ```txt
-internal/game/cluster/types.go      — ClusterID, ClusterInput, ClusterPlayer, ClusterOutput, ClusterConfig
-internal/game/cluster/allocator.go  — ClusterAllocator interface
-internal/game/cluster/kmeans.go     — KMeansClusterAllocator
+internal/game/cluster/types.go       — ClusterID, ClusterInput, ClusterOutput, ClusterConfig
+internal/game/cluster/allocator.go   — ClusterAllocator interface
+internal/game/cluster/kmeans.go      — KMeansClusterAllocator
 internal/game/cluster/kmeans_test.go — unit tests
+internal/game/room/room.go           — ClusterConfig in RoomConfig, cluster integration in buildDeltaBatches
+internal/game/room/cluster_delta_test.go — cluster-based delta building tests
 ```
 
 ## Deferred / Future Scope
