@@ -13,7 +13,7 @@ Phase 1 delta broadcast covers player position sync only.
 | Position dirty tracking | Implemented |
 | Per-client snapshot cache | Implemented |
 | Protocol wire structs and MessagePack roundtrip for PlayerDelta | Implemented (Stage 2 Task 10) |
-| Transport send (KCP/WSS) of PlayerDelta | Not yet implemented |
+| Transport send (KCP/WSS) of PlayerDelta | Implemented (Stage 2 Task 15 skeleton) |
 
 Deferred from Phase 1:
 
@@ -23,14 +23,17 @@ Deferred from Phase 1:
 | ObjectLockDelta | Deferred / Future Scope |
 | VoiceGroupDelta | Deferred / Future Scope |
 
-## Status: Cluster-based delta building integrated (Stage 2 Task 9)
+## Status: Cluster-based delta building and dispatch integrated (Stage 2 Task 15)
 
-Player delta skeleton is complete. Cluster-based interest management is fully integrated with delta building.
+Player delta skeleton is complete. Cluster-based interest management is integrated with delta building, and the room loop can dispatch encoded `PlayerDelta` packets through the app-layer bridge when a broadcaster is installed.
 
 - `Room.buildDeltaBatches` uses `ClusterOutput` to determine visible players when `cluster_enabled=true`
 - Falls back to `InterestManager` radius query when `cluster_enabled=false`
+- `Room.broadcast` calls `room.Broadcaster.BroadcastDelta` after building per-session batches
+- `internal/app/realtime.RoomDeltaBroadcaster` adapts room session IDs to `internal/game/bridge.DeltaBroadcaster`
+- The bridge encodes MessagePack Protocol v1 `PlayerDelta` envelopes and sends them through `transport.RealtimeSession`
 - Object delta placeholder types are defined but not yet wired into interest management or transport send
-- Voice group delta and transport send are deferred
+- Voice group delta is deferred
 
 ## Components
 
@@ -115,16 +118,32 @@ Room tick (20 Hz):
     buildDeltaBatches — cluster interest (or radius fallback) + delta computation per session
     clearDirtyPlayers
     sessionMu.Unlock
-    [batches discarded — transport send is a future milestone]
+    if broadcaster is installed: dispatch batches to RealtimeSession (KCP or WSS)
 ```
 
 ## Transport Separation
 
 - `DeltaBuilder` has no transport-specific fields or logic.
 - `DeltaBatch` has no KCP/WebSocket metadata.
-- The delta builder outputs domain data only; encoding and sending are deferred to Phase 1 transport send milestone.
+- The delta builder outputs domain data only; encoding and sending happen in the app/bridge layer.
 - Transport packages must not import `internal/game`.
 - Native (KCP) and WebGL (WSS) clients receive semantically identical `PlayerDelta` payloads.
+
+## Stage 2 Task 15 Skeleton Flow
+
+The E2E skeleton keeps the runtime boundaries explicit:
+
+```txt
+receive adapter
+  -> realtime packet handler
+  -> room command queue
+  -> room tick
+  -> cluster/interest delta build
+  -> app-layer bridge dispatch
+  -> fake KCP/WSS sessions receive MessagePack Protocol v1 PlayerDelta payloads
+```
+
+This is not a full production network loop. It verifies the receive-to-dispatch path with fake sessions while preserving the rule that transport packages do not import game packages.
 
 ## Interest Integration
 
@@ -171,12 +190,11 @@ Not wired to interest management, snapshot cache, or transport send. Not a Phase
 Phase 1 items not yet implemented:
 
 ```txt
-- Delta broadcaster integration that encodes PlayerDelta packets for transport
-- Transport send (KCP or WSS) of encoded PlayerDelta packets
 - FullSnapshot on join/reconnect (deferred — FullSnapshot is a separate message type)
+- Production transport loop wiring for live KCP/WSS sessions beyond the current skeleton
 ```
 
-Protocol wire structs and codec roundtrip coverage for `PlayerDelta`, `PlayerEnterDelta`, `PlayerUpdateDelta`, `PlayerLeaveDelta`, and `FullSnapshot` were added in Stage 2 Task 10. Runtime send from the room loop remains intentionally unimplemented.
+Protocol wire structs and codec roundtrip coverage for `PlayerDelta`, `PlayerEnterDelta`, `PlayerUpdateDelta`, `PlayerLeaveDelta`, and `FullSnapshot` were added in Stage 2 Task 10. Stage 2 Task 15 added the skeleton room-loop-to-bridge dispatch path for `PlayerDelta`.
 
 ClusterAllocator and cluster-based delta building completed in Stage 2 Tasks 7-9:
 

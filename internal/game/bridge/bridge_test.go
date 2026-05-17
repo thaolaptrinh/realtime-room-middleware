@@ -417,6 +417,79 @@ func TestDispatchBatches_MultipleSessions(t *testing.T) {
 	}
 }
 
+func TestDispatchBatches_ReportsOneSessionSendFailureWithoutPanic(t *testing.T) {
+	sendErr := errors.New("wss send failed")
+	kcpSess := &fakeSession{id: "kcp-ok", transport: transport.KCP}
+	wssSess := &fakeSession{id: "wss-fail", transport: transport.WebSocket, sendErr: sendErr}
+
+	sessions := map[string]*fakeSession{
+		kcpSess.ID(): kcpSess,
+		wssSess.ID(): wssSess,
+	}
+	lookup := func(id string) transport.RealtimeSession { return sessions[id] }
+
+	pd := domainPlayerDelta(12, nil, []delta.PlayerUpdateDelta{
+		{
+			PlayerID: player.PlayerID("p1"),
+			Transform: player.PlayerTransform{
+				Position: player.Vector3{X: 2, Z: 3},
+				Rotation: player.Quaternion{X: 0, Y: 0.5, Z: 0, W: 1},
+			},
+			Version: 2,
+		},
+	}, nil)
+	batches := map[string]*delta.DeltaBatch{
+		kcpSess.ID(): {Tick: 12, PlayerDelta: pd},
+		wssSess.ID(): {Tick: 12, PlayerDelta: pd},
+	}
+
+	var results []SendResult
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("DispatchBatches panicked on one failed send: %v", r)
+			}
+		}()
+		results = DispatchBatches(batches, lookup)
+	}()
+
+	if len(results) != 2 {
+		t.Fatalf("results len = %d, want 2", len(results))
+	}
+	var sawOK, sawFailure bool
+	for _, result := range results {
+		switch result.SessionID {
+		case kcpSess.ID():
+			sawOK = true
+			if result.Error != nil {
+				t.Fatalf("KCP result error = %v, want nil", result.Error)
+			}
+			if result.Transport != transport.KCP {
+				t.Fatalf("KCP result transport = %s, want %s", result.Transport, transport.KCP)
+			}
+		case wssSess.ID():
+			sawFailure = true
+			if !errors.Is(result.Error, sendErr) {
+				t.Fatalf("WSS result error = %v, want %v", result.Error, sendErr)
+			}
+			if result.Transport != transport.WebSocket {
+				t.Fatalf("WSS result transport = %s, want %s", result.Transport, transport.WebSocket)
+			}
+		default:
+			t.Fatalf("unexpected result for session %q", result.SessionID)
+		}
+	}
+	if !sawOK || !sawFailure {
+		t.Fatalf("results missing expected sessions: sawOK=%v sawFailure=%v results=%+v", sawOK, sawFailure, results)
+	}
+	if len(kcpSess.packets) != 1 {
+		t.Fatalf("successful KCP packets = %d, want 1", len(kcpSess.packets))
+	}
+	if len(wssSess.packets) != 0 {
+		t.Fatalf("failed WSS packets = %d, want 0", len(wssSess.packets))
+	}
+}
+
 func TestDispatchBatches_MissingSession(t *testing.T) {
 	lookup := func(id string) transport.RealtimeSession {
 		return nil // session not found

@@ -74,9 +74,9 @@ Push to room command queue
     ↓
 Room loop (single goroutine per room)
     ↓
-Mutate player/object state → compute delta → enqueue outbound packets
+Mutate player state → compute cluster/interest PlayerDelta
     ↓
-Transport adapter → send encoded MessagePack packet
+App-layer bridge → encode MessagePack Protocol v1 → RealtimeSession send
 ```
 
 **Only the room loop may mutate room state.**
@@ -91,6 +91,7 @@ KCPTransport / WSSTransport
     → Room.Commands (channel, queues input to room loop)
     → Room loop (single goroutine per room)
     → SpatialIndex → InterestManager → DeltaBroadcaster
+    → App realtime bridge → RealtimeSession (KCP or WSS)
     → ObjectLockManager
     → VoiceGroupAllocator
 ```
@@ -108,8 +109,8 @@ KCPTransport / WSSTransport
 6. Server sends `Welcome` or `Error(InvalidVersion)`.
 7. Client sends `JoinRoom` with session token and room instance ID — same wire format on both transports.
 8. Server validates token and attaches session to room.
-9. Server sends `JoinAccepted` and `FullSnapshot`.
-10. Server begins sending `PlayerDelta`, `ObjectDelta`, `VoiceGroupDelta` at broadcast rate.
+9. Server sends `JoinAccepted` and `FullSnapshot` when join-response wiring is installed.
+10. Server begins sending `PlayerDelta` at broadcast rate. `ObjectDelta` and `VoiceGroupDelta` remain deferred.
 
 ## Data Flow: Tick and Broadcast
 

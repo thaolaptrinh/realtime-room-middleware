@@ -115,7 +115,7 @@ game:
   broadcast_rate_hz: 10   # delta packet send frequency
 ```
 
-Phase 1 skeleton: tick drains command queue only. Full simulation added in Milestone 3–5.
+Phase 1 skeleton: the room tick drains the command queue, applies player transform updates, updates spatial and cluster state, builds per-session `PlayerDelta` batches, and dispatches those batches when a `Broadcaster` is installed. The production transport loop remains outside this skeleton.
 
 ## Cluster Update Scheduling (Phase 1)
 
@@ -133,8 +133,8 @@ Broadcast tick (10 Hz):
   for each session:
     build interest set from cluster membership
     build PlayerDelta vs ClientSnapshotCache
-    encode MessagePack
-    enqueue to RealtimeSession (KCP or WSS)
+    hand delta batch to Broadcaster, when installed
+    bridge encodes MessagePack and sends to RealtimeSession (KCP or WSS)
 ```
 
 Rules:

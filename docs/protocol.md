@@ -198,7 +198,7 @@ type Pong struct {
 
 ## Phase 1 Message Wire Formats
 
-The following message types define the Phase 1 player position sync wire format. The MessagePack structs and validation live in `internal/protocol`; transport send is still implemented separately. No wire-format change may occur after first Unity client integration without a protocol version bump.
+The following message types define the Phase 1 player position sync wire format. The MessagePack structs and validation live in `internal/protocol`; runtime dispatch is wired separately through the app-layer bridge so protocol does not depend on game or transport packages. No wire-format change may occur after first Unity client integration without a protocol version bump.
 
 ### PlayerInput (client → server, type 4)
 
@@ -352,17 +352,19 @@ Token validation on the game server is not yet implemented.
 
 ## Not Yet Implemented
 
-### Phase 1 — Implemented Wire Structs, Not Yet Sent by Transport
+### Phase 1 — Implemented Wire Structs and Skeleton Dispatch
 
-Wire formats are specified above and represented in `internal/protocol`. The delta broadcaster does not yet encode and send these messages through KCP or WSS.
+Wire formats are specified above and represented in `internal/protocol`. Stage 2 Task 15 wires a skeleton receive-to-dispatch path for `PlayerDelta`: the room loop builds per-session delta batches, the app-layer bridge converts them to Protocol v1 MessagePack envelopes, and fake KCP/WSS sessions receive the same `PlayerDelta` payload format.
 
 ```txt
 PlayerInput (4)              — wire struct implemented
 PlayerTransformUpdate (6)    — wire struct implemented
 FullSnapshot (1005)          — wire struct implemented
-PlayerDelta (1006)           — wire struct implemented
+PlayerDelta (1006)           — wire struct implemented; skeleton bridge dispatch implemented
 ClusterMembershipDelta (1011) — optional, wire format TBD
 ```
+
+Production KCP/WSS network-loop wiring and automatic `FullSnapshot` send on join remain outside this skeleton.
 
 ### Deferred / Future Scope
 

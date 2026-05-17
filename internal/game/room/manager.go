@@ -37,6 +37,12 @@ func NewRoomManager(registry RoomRegistry, cfg RoomConfig, logger *slog.Logger) 
 // CreateRoom creates, registers, and starts a new room instance for the given
 // logical room ID. The caller receives a running Room ready to accept commands.
 func (m *RoomManager) CreateRoom(ctx context.Context, logicalID LogicalRoomID) (*Room, error) {
+	return m.CreateRoomWithBroadcaster(ctx, logicalID, nil)
+}
+
+// CreateRoomWithBroadcaster creates, registers, installs a delta broadcaster,
+// and starts a new room instance. Passing nil preserves CreateRoom behavior.
+func (m *RoomManager) CreateRoomWithBroadcaster(ctx context.Context, logicalID LogicalRoomID, broadcaster Broadcaster) (*Room, error) {
 	instanceID := m.generateInstanceID(logicalID)
 
 	spec := RoomSpec{
@@ -49,15 +55,16 @@ func (m *RoomManager) CreateRoom(ctx context.Context, logicalID LogicalRoomID) (
 		return nil, fmt.Errorf("register room %q: %w", instanceID, err)
 	}
 
-	room := newRoom(spec, m.logger)
-	if err := room.Start(ctx); err != nil {
+	r := newRoom(spec, m.logger)
+	r.SetBroadcaster(broadcaster)
+	if err := r.Start(ctx); err != nil {
 		// Roll back: mark registry entry closed on start failure.
 		_ = m.registry.MarkClosed(ctx, instanceID)
 		return nil, fmt.Errorf("start room %q: %w", instanceID, err)
 	}
 
 	m.mu.Lock()
-	m.rooms[instanceID] = room
+	m.rooms[instanceID] = r
 	m.mu.Unlock()
 
 	m.logger.Info("room created",
@@ -65,7 +72,7 @@ func (m *RoomManager) CreateRoom(ctx context.Context, logicalID LogicalRoomID) (
 		slog.String("room_instance_id", string(instanceID)),
 	)
 
-	return room, nil
+	return r, nil
 }
 
 // GetRoom retrieves a live room by instance ID.
